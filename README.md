@@ -40,10 +40,18 @@ Browser  <-- multipart/x-mixed-replace, ~1 fps -->  aiohttp StreamResponse
 
 The sensor's `FrameDurationLimits` is driven by `stream.framerate`, so
 producer and consumer run at the same cadence and the libcamera buffer
-pool never accumulates stale frames. A capture timeout (2 s) triggers
+pool never accumulates stale frames. A capture timeout triggers
 in-stream recovery: the camera is marked broken, released, and re-
 acquired — the next acquire reopens a fresh picamera2 instance without
-breaking the user's HTTP connection.
+breaking the user's HTTP connection. The timeout is split: 15 s for
+the first frame after a fresh acquire (libcamera AGC/AWB convergence
+at 1 fps can take 5-10 s) and `max(2 s, 3 × frame_interval)` for
+steady-state frames (tight enough to catch a real wedge fast).
+
+At service boot both cameras are warmed in parallel and (with
+`power.keep_cameras_warm = true`, the default) left running for the
+lifetime of the service, so viewer connects never pay the cold-start
+cost.
 
 ## Hardware
 
@@ -131,15 +139,27 @@ jpeg_quality = 75            # 1..95
 [power]
 disable_act_led    = true    # best-effort; needs root in Phase 1
 idle_grace_seconds = 10      # how long a refcount=0 camera lingers
+keep_cameras_warm  = true    # hold both cameras open from boot;
+                             # eliminates ~5-10 s viewer cold-start
+                             # latency at the cost of ~1 W idle power.
+                             # Phase 2's schedule layer is expected
+                             # to flip this off outside the active
+                             # window.
 ```
 
 ### Bandwidth and power
 
 - ~80 KB per frame at 1280x720 JPEG quality 75
 - ~640 kbps per active viewer at 1 fps
-- Camera draws zero power when no viewer is connected (refcount=0,
-  picamera2 stopped after `idle_grace_seconds`)
-- Two viewers on the same camera share the single picamera2 instance
+- With `power.keep_cameras_warm = true` (default), both cameras run
+  continuously at ~0.5 W each. Set it to `false` to recover that
+  power when no viewer is connected, at the cost of a ~5-10 s
+  first-frame delay on cold viewer connects.
+- N viewers on the same camera currently split the configured
+  framerate — each one gets `framerate / N` fps because the
+  per-camera capture executor is single-threaded and serializes
+  `cam.capture()`. The sensor is still producing at the full rate;
+  see Phase 2 / *shared frame fanout* for the planned fix.
 
 ### CSI overlays
 
@@ -183,6 +203,18 @@ sudo bash scripts/update.sh
 - `/stream/*` returns `503 SLEEPING` when the mode state machine has
   declared the Pi asleep (mostly relevant in `dry_run` since a real
   HARD_SLEEP halts the Pi).
+- Schedule layer flips `power.keep_cameras_warm` off outside the
+  active window so the ~1 W camera-idle cost is only paid while the
+  system is supposed to be serving frames.
+- **Shared frame fanout per camera.** Replace the per-connection
+  capture loop with a single per-camera capture-and-encode loop that
+  publishes each finished JPEG to an `asyncio.Event` (or per-viewer
+  queue). Stream handlers await the latest frame and write it out.
+  N concurrent viewers on the same camera then each receive the full
+  configured framerate (instead of `framerate / N`), with no extra
+  camera work and no extra JPEG encoding. Estimated change: ~50
+  lines across `cameras.py` (publisher) and `server.py` (subscriber
+  in `_stream`); the public surface is unchanged.
 
 None of these change the streaming surface; they layer on top of the
 existing `cameras.py` and `server.py` cleanly.
