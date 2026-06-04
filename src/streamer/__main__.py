@@ -11,16 +11,18 @@ from pathlib import Path
 from aiohttp import web
 
 from streamer import __version__
-from streamer.cameras import CameraManager, build_manager
-from streamer.config import load_config
+from streamer.cameras import Camera, CameraManager, build_manager
+from streamer.config import AppConfig, load_config
 from streamer.server import StreamerServer
 
 
 # How long the warm-up pass waits for the first frame from each camera.
-# Generous because at 1 fps the first frame can take 1.5-2.5 s, and
-# the whole point of this warm-up is to take the pain at boot instead
-# of pushing it onto the first viewer.
-WARMUP_TIMEOUT_SECONDS = 5.0
+# At low framerates (≤2 fps) picamera2's first frame after a cold
+# ``start()`` can take 3-10 s — it has to wait for one full
+# ``FrameDurationLimits`` interval *and* for libcamera's IPA/3A
+# (AGC/AWB) to converge across several frames. 15 s is comfortably
+# above the worst case we've observed at 1 fps.
+WARMUP_TIMEOUT_SECONDS = 15.0
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -57,36 +59,70 @@ def _apply_phase1_power_hooks(disable_act_led: bool) -> None:
         )
 
 
-async def _warmup_cameras(cameras: CameraManager, log: logging.Logger) -> None:
-    """Acquire each camera in turn, capture one frame, release.
+async def _warmup_cameras(
+    cameras: CameraManager, config: AppConfig, log: logging.Logger
+) -> None:
+    """Start both cameras concurrently and wait for the first frame.
 
-    Sequential rather than concurrent so the boot log is easy to read
-    and so libcamera doesn't try to allocate both pipelines in the
-    exact same instant (which itself has been flaky on Pi 5 dual-cam
-    setups). After release, each camera will idle-stop after
-    ``power.idle_grace_seconds`` — long enough that the next viewer
-    connection is unlikely to require a full cold start, but short
-    enough that we're not burning camera power forever.
+    Concurrent rather than sequential: starting both picamera2 instances
+    at the same instant gives libcamera/PiSP the best chance to
+    coordinate both halves of the dual-IMX708 pipeline together — the
+    regime the user-facing streams will mostly run in. Starting them
+    one at a time has been observed to leave the second one in a
+    state where its first frame takes >5 s to deliver.
+
+    If ``power.keep_cameras_warm`` is set (default), each camera is
+    left at refcount=1 so it stays running for the lifetime of the
+    service. Viewers then never see a cold-start delay. Otherwise the
+    warm-up acquires are released and each camera follows the usual
+    ``idle_grace_seconds`` idle-stop path.
     """
 
-    for cam in cameras.all():
+    hold = config.power.keep_cameras_warm
+
+    async def _warm_one(cam: Camera) -> None:
         try:
-            async with cam.session():
-                await asyncio.wait_for(
-                    cam.capture(), timeout=WARMUP_TIMEOUT_SECONDS
-                )
+            await cam.acquire()
+        except Exception:
+            log.exception(
+                "Camera %d acquire failed during warmup", cam.camera_num
+            )
+            return
+        warmed = False
+        try:
+            await asyncio.wait_for(
+                cam.capture(), timeout=WARMUP_TIMEOUT_SECONDS
+            )
+            warmed = True
             log.info("Camera %d warmed", cam.camera_num)
         except (asyncio.TimeoutError, TimeoutError):
             log.warning(
                 "Camera %d warmup timed out after %.1fs; "
-                "first-viewer recovery path will handle it",
+                "stream recovery path will retry",
                 cam.camera_num,
                 WARMUP_TIMEOUT_SECONDS,
             )
-            # Don't mark broken here — the recovery path on the first
-            # real viewer will do it if needed.
+            cam.mark_broken()
         except Exception:
             log.exception("Camera %d warmup failed", cam.camera_num)
+            cam.mark_broken()
+        finally:
+            # Release unless we're meant to hold the pipeline warm,
+            # AND in that case only hold cameras that actually warmed
+            # successfully — a broken instance left at refcount=1
+            # would just spin in recovery forever with nothing useful
+            # to recover into. Releasing it lets the next viewer's
+            # acquire rebuild it cleanly.
+            if not hold or not warmed:
+                try:
+                    await cam.release()
+                except Exception:
+                    log.exception(
+                        "Release after warmup failed for camera %d",
+                        cam.camera_num,
+                    )
+
+    await asyncio.gather(*(_warm_one(cam) for cam in cameras.all()))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -138,24 +174,29 @@ def main(argv: list[str] | None = None) -> int:
     app = server.build()
 
     async def _warmup_pipelines(_app: web.Application) -> None:
-        """Briefly touch each camera so libcamera/PiSP allocates both
-        halves of the dual-IMX708 pipeline before any viewer connects.
+        """Start both cameras at service boot and (optionally) keep
+        them running so viewer connects never pay the cold-start cost.
 
-        Empirically, opening one camera on a Pi 5 dual-IMX708 setup
-        from a fully cold state often fails to deliver frames at all
-        until the other camera is also started — the PiSP scheduler
-        appears to coordinate the two pipelines and needs both ends
-        active. Doing one acquire/capture/release per camera at boot
-        primes that state, after which single-camera streams work.
-
-        Best-effort: a failure here logs and moves on; the regular
-        capture-timeout recovery path picks up the slack later.
+        Best-effort: a per-camera failure here is logged and won't
+        stop the service; the regular capture-timeout recovery path
+        picks up the slack on the next viewer connect.
         """
 
         log = logging.getLogger("streamer.warmup")
-        log.info("Warming up camera pipelines")
-        await _warmup_cameras(cameras, log)
-        log.info("Warmup complete")
+        mode = "hold" if config.power.keep_cameras_warm else "touch"
+        log.info("Warming up camera pipelines (concurrent, mode=%s)", mode)
+        await _warmup_cameras(cameras, config, log)
+        if config.power.keep_cameras_warm:
+            log.info(
+                "Warmup complete; holding cameras warm "
+                "(power.keep_cameras_warm = true)"
+            )
+        else:
+            log.info(
+                "Warmup complete; cameras released "
+                "(idle stop in %ds)",
+                config.power.idle_grace_seconds,
+            )
 
     async def _on_cleanup(_app: web.Application) -> None:
         await cameras.shutdown()

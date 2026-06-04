@@ -48,21 +48,31 @@ logger = logging.getLogger("streamer.server")
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
-# Per-frame capture timeout floor. ``Camera.capture`` runs in a
-# per-camera thread, so a TimeoutError here only unblocks the awaiting
-# coroutine — the underlying thread is still wedged inside libcamera.
-# We mark the camera broken so the next acquire rebuilds the picamera2
+# Per-frame capture timeout. ``Camera.capture`` runs in a per-camera
+# thread, so a TimeoutError here only unblocks the awaiting coroutine
+# — the underlying thread is still wedged inside libcamera. We mark
+# the camera broken so the next acquire rebuilds the picamera2
 # instance.
 #
-# At steady state a healthy capture completes in ~50 ms regardless of
-# the configured framerate. The first capture after a cold open,
-# however, has to wait for one full ``FrameDurationLimits`` interval
-# plus libcamera's IPA / 3A warm-up — empirically 1.2-2.5 s at 1 fps.
-# So the effective timeout is ``max(CAPTURE_TIMEOUT_FLOOR_SECONDS,
-# CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER × frame_interval)``: tight enough
-# at 15 fps to detect a real wedge quickly, generous enough at 1 fps
-# that the first frame post-restart (or post-HARD_SLEEP wake) makes it
-# in.
+# We split the timeout into two regimes because they have very
+# different expected latencies:
+#
+#   * **First frame after a fresh acquire.** Has to wait for one full
+#     ``FrameDurationLimits`` interval *and* for libcamera's IPA/3A
+#     (AGC/AWB) to converge across several frames. At 1 fps this can
+#     reach 5-10 s; ``FIRST_FRAME_TIMEOUT_SECONDS`` is set well above
+#     that so a slow cold start isn't mistaken for a wedge.
+#   * **Steady-state frames.** A healthy capture completes in ~50 ms
+#     regardless of framerate. The effective steady-state timeout is
+#     ``max(CAPTURE_TIMEOUT_FLOOR_SECONDS,
+#     CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER × frame_interval)``: tight
+#     enough at 15 fps to detect a wedge quickly, generous enough at
+#     1 fps to absorb scheduler jitter without false positives.
+#
+# After a recovery (mark_broken → release → re-acquire), the next
+# capture is again considered "first frame" — the picamera2 instance
+# was just rebuilt.
+FIRST_FRAME_TIMEOUT_SECONDS = 15.0
 CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
 CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
 
@@ -223,7 +233,7 @@ class StreamerServer:
             self._active_streams.add(task)
 
         target_interval = 1.0 / max(self.config.stream.framerate, 0.01)
-        capture_timeout = max(
+        steady_timeout = max(
             CAPTURE_TIMEOUT_FLOOR_SECONDS,
             CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER * target_interval,
         )
@@ -237,6 +247,9 @@ class StreamerServer:
         # to trigger the recovery path — all while keeping the same
         # HTTP connection (and the user's <img>) alive.
         acquired = False
+        # Reset to 0 on every (re-)acquire so the next capture uses
+        # the generous first-frame timeout.
+        frames_since_acquire = 0
         try:
             while True:
                 if not acquired:
@@ -246,16 +259,25 @@ class StreamerServer:
                         log.exception("Camera acquire failed; closing stream")
                         break
                     acquired = True
+                    frames_since_acquire = 0
 
                 cycle_start = time.monotonic()
+                this_timeout = (
+                    FIRST_FRAME_TIMEOUT_SECONDS
+                    if frames_since_acquire == 0
+                    else steady_timeout
+                )
                 try:
                     array = await asyncio.wait_for(
-                        cam.capture(), timeout=capture_timeout
+                        cam.capture(), timeout=this_timeout
                     )
                 except (asyncio.TimeoutError, TimeoutError):
                     log.warning(
-                        "Capture timeout on camera %d; recovering",
+                        "Capture timeout on camera %d after %.1fs "
+                        "(frames_since_acquire=%d); recovering",
                         camera_num,
+                        this_timeout,
+                        frames_since_acquire,
                     )
                     cam.mark_broken()
                     await cam.release()
@@ -266,6 +288,7 @@ class StreamerServer:
                     await asyncio.sleep(target_interval)
                     continue
 
+                frames_since_acquire += 1
                 jpeg = await loop.run_in_executor(
                     None, encode_jpeg, array, jpeg_quality
                 )

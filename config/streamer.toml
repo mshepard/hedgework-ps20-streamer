@@ -43,7 +43,14 @@ framerate = 1.0
 jpeg_quality = 75
 
 [power]
-# Phase 1 honours only these two minimal settings. Phase 2 expands this
+# Phase 1 honours only these minimal settings. Phase 2 expands this
 # block.
 disable_act_led = true
 idle_grace_seconds = 10
+# Hold both cameras open from service start, eliminating the first-frame
+# latency (~3-10s at 1 fps) that viewers would otherwise see on a fresh
+# connect to an idle camera. Costs ~1 W of camera power continuously.
+# Phase 2's schedule layer is expected to flip this off outside the
+# active window so the cost is only paid while the system is supposed
+# to be serving frames anyway.
+keep_cameras_warm = true

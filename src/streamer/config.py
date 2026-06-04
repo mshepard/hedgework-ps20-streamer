@@ -73,6 +73,15 @@ class PowerConfig(BaseModel):
     # ~150 ms re-init); long enough doesn't matter much because the
     # consumer pattern is steady-state streaming.
     idle_grace_seconds: int = Field(default=10, ge=0)
+    # Hold both cameras open at refcount=1 from service start.
+    # At low framerates (≤2 fps) picamera2's first frame after a cold
+    # ``start()`` can take 3-10 s — long enough to make viewer-side
+    # cold starts feel broken. Keeping both pipelines warm continuously
+    # eliminates that delay; the cost is ~1 W extra at idle (two IMX708
+    # sensors active at 1 fps). Phase 2's schedule layer is expected to
+    # flip this off outside the active window so the cost is only paid
+    # while the system is supposed to be serving frames anyway.
+    keep_cameras_warm: bool = True
 
 
 class AppConfig(BaseModel):
