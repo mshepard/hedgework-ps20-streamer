@@ -48,12 +48,23 @@ logger = logging.getLogger("streamer.server")
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
-# Per-frame capture timeout. ``Camera.capture`` runs in a per-camera
-# thread, so a TimeoutError here only unblocks the awaiting coroutine —
-# the underlying thread is still wedged inside libcamera. We mark the
-# camera broken so the next acquire rebuilds the picamera2 instance.
-# Healthy captures complete in ~50 ms; 2 s is a comfortable ceiling.
-CAPTURE_TIMEOUT_SECONDS = 2.0
+# Per-frame capture timeout floor. ``Camera.capture`` runs in a
+# per-camera thread, so a TimeoutError here only unblocks the awaiting
+# coroutine — the underlying thread is still wedged inside libcamera.
+# We mark the camera broken so the next acquire rebuilds the picamera2
+# instance.
+#
+# At steady state a healthy capture completes in ~50 ms regardless of
+# the configured framerate. The first capture after a cold open,
+# however, has to wait for one full ``FrameDurationLimits`` interval
+# plus libcamera's IPA / 3A warm-up — empirically 1.2-2.5 s at 1 fps.
+# So the effective timeout is ``max(CAPTURE_TIMEOUT_FLOOR_SECONDS,
+# CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER × frame_interval)``: tight enough
+# at 15 fps to detect a real wedge quickly, generous enough at 1 fps
+# that the first frame post-restart (or post-HARD_SLEEP wake) makes it
+# in.
+CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
+CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
 
 # Paths that bypass auth entirely. The static UI bundle and the four
 # HTML entrypoints (landing, cam pages, health) must be reachable
@@ -212,6 +223,10 @@ class StreamerServer:
             self._active_streams.add(task)
 
         target_interval = 1.0 / max(self.config.stream.framerate, 0.01)
+        capture_timeout = max(
+            CAPTURE_TIMEOUT_FLOOR_SECONDS,
+            CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER * target_interval,
+        )
         jpeg_quality = self.config.stream.jpeg_quality
         loop = asyncio.get_running_loop()
         frames_written = 0
@@ -235,7 +250,7 @@ class StreamerServer:
                 cycle_start = time.monotonic()
                 try:
                     array = await asyncio.wait_for(
-                        cam.capture(), timeout=CAPTURE_TIMEOUT_SECONDS
+                        cam.capture(), timeout=capture_timeout
                     )
                 except (asyncio.TimeoutError, TimeoutError):
                     log.warning(
