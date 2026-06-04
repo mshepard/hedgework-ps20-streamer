@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HEDGEWORK @ PS 20 · Camera</title>
+    <link rel="icon" type="image/png" href="/static/media/Hedge-icon.png" />
+    <link rel="apple-touch-icon" href="/static/media/Hedge-icon.png" />
+    <!-- Inter is the brand typeface used on https://ps20.hedgework.net/
+         for body / UI text; Lexend Tera is reserved for the
+         HEDGEWORK @ PS 20 brand mark in the header. If the browser can't
+         reach fonts.googleapis.com, the CSS falls back to a system
+         sans-serif. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lexend+Tera:wght@400;500;700&display=swap"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body class="cam-page">
+    <header class="cam-topbar">
+      <div class="brand">
+        <span id="brand-name" class="brand-name">HEDGEWORK @ PS 20</span>
+        <span class="brand-sep">·</span>
+        <span id="cam-label">Camera ?</span>
+      </div>
+      <div class="controls">
+        <!-- Start opens an MJPEG connection by setting <img>.src to
+             /stream/cam{N}. Stop clears the src, which immediately
+             closes the connection and releases the camera refcount on
+             the server. -->
+        <button id="start-btn" type="button">Start</button>
+        <button id="stop-btn" type="button" disabled>Stop</button>
+        <button id="fullscreen-btn" type="button" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
+      </div>
+    </header>
+
+    <main class="cam-main">
+      <div class="cam-stage" id="cam-stage">
+        <!-- The MJPEG stream renders into this <img>. While the page is
+             idle (Start not clicked) src is empty and the dark stage
+             shows through. The browser handles the multipart parsing
+             natively; no JavaScript is involved in the per-frame
+             update. -->
+        <img
+          id="frame"
+          alt="Live camera frame"
+          decoding="async"
+          referrerpolicy="no-referrer"
+        />
+        <div id="live-indicator" class="cam-live-indicator hidden" aria-hidden="true">
+          <span class="cam-live-dot"></span>
+          <span>LIVE</span>
+        </div>
+        <div id="overlay" class="cam-overlay">
+          <div class="cam-overlay-inner" id="overlay-message">Press Start to begin streaming</div>
+        </div>
+      </div>
+    </main>
+
+    <script src="/static/cam.js"></script>
+  </body>
+</html>

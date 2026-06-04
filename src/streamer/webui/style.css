@@ -1,0 +1,397 @@
+/* Streamer — single themed stylesheet.
+ *
+ * Brand palette (lifted from https://ps20.hedgework.net/):
+ *   #ff8c44   orange      — primary accent, Start / Fullscreen buttons
+ *   #ff7d2c   orange-dark — hover
+ *   #15312b   dark forest — text / Stop button background
+ *   #1f4a3f   dark hover
+ *   #9eccde   sky blue
+ *   #f4ef9a   pale yellow
+ *   #FAFBFC   off-white   — body background
+ *   #f6ccd5   dusty pink  — header background
+ *
+ * Typography: Inter for body/UI text; Lexend Tera reserved for the
+ * project brand mark in the topbar. System sans-serif fallback if the
+ * Google Fonts request fails.
+ *
+ * The Johanna Kindvall PS-20 artwork is pinned to the bottom of the
+ * viewport so plants appear to grow up from the foot of the page.
+ */
+
+:root {
+  --brand-orange: #ff8c44;
+  --brand-orange-hover: #ff7d2c;
+  --brand-dark: #15312b;
+  --brand-dark-hover: #1f4a3f;
+  --brand-blue: #9eccde;
+  --brand-yellow: #f4ef9a;
+  --brand-cream: #fafbfc;
+  --brand-pink: #f6ccd5;
+
+  --cam-bg-image: url("/static/media/PS20-hedgework-ARTWORK-JohannaKindvall-10-alpha.png");
+  --cam-font-stack: "Inter", "Inter Fallback", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body.cam-page {
+  background-color: var(--brand-cream);
+  background-image: var(--cam-bg-image);
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  /* Cap the artwork on huge displays so plants stay proportional, and
+     scale up on small displays so they still anchor the layout. */
+  background-size: min(1600px, 95vw) auto;
+  background-attachment: fixed;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--cam-font-stack);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--brand-dark);
+}
+
+/* ---------- Header ---------- */
+
+.cam-topbar {
+  display: flex;
+  background: var(--brand-pink);
+  padding: 16px 32px;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.cam-topbar .brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.cam-topbar .brand > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cam-topbar .brand-name {
+  font-family: "Lexend Tera", var(--cam-font-stack);
+  font-weight: 500;
+  /* Lexend Tera is visually wider than Inter at the same nominal size;
+     drop the brand size so the header doesn't dominate the page. */
+  font-size: 22px;
+  line-height: 1.2;
+  color: var(--brand-dark);
+}
+
+.cam-topbar .brand-sep {
+  color: var(--brand-dark);
+  opacity: 0.4;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+#cam-label {
+  font-family: var(--cam-font-stack);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-dark);
+}
+
+/* ---------- Buttons ---------- */
+
+.controls {
+  margin-left: auto;
+  gap: 10px;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+button {
+  font-family: var(--cam-font-stack);
+  background: var(--brand-orange);
+  color: #fff;
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  border-radius: 4px;
+  padding: 9px 20px;
+  min-height: 40px;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--brand-orange-hover);
+}
+
+/* Disabled state fades the button with opacity instead of recolouring
+ * so per-variant background rules below stay legible. */
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#stop-btn,
+#stop-btn:disabled {
+  background: var(--brand-dark);
+  color: #fff;
+}
+
+#stop-btn:hover:not(:disabled) {
+  background: var(--brand-dark-hover);
+}
+
+#fullscreen-btn {
+  padding: 9px 14px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---------- Video stage ---------- */
+
+.cam-main {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 32px 32px 48px;
+  min-height: 0;
+}
+
+.cam-stage {
+  position: relative;
+  background: #111;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  width: 100%;
+  max-width: 1280px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(21, 49, 43, 0.08);
+  box-shadow:
+    0 1px 2px rgba(21, 49, 43, 0.06),
+    0 14px 40px rgba(21, 49, 43, 0.1);
+}
+
+.cam-stage img#frame {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #111;
+  display: block;
+}
+
+/* Before Start is clicked, the <img> has no src; hide its broken-image
+ * icon so the dark stage shows cleanly behind the overlay. */
+.cam-stage img#frame:not([src]),
+.cam-stage img#frame[src=""] {
+  visibility: hidden;
+}
+
+/* ---------- LIVE indicator ---------- */
+
+.cam-live-indicator {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  background: rgba(21, 49, 43, 0.72);
+  color: #fff;
+  font-family: var(--cam-font-stack);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cam-live-indicator.hidden {
+  display: none;
+}
+
+.cam-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand-orange);
+  box-shadow: 0 0 0 0 rgba(255, 140, 68, 0.6);
+  animation: cam-live-pulse 1.4s ease-out infinite;
+}
+
+@keyframes cam-live-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(255, 140, 68, 0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(255, 140, 68, 0); }
+  100% { box-shadow: 0 0 0 0   rgba(255, 140, 68, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cam-live-dot { animation: none; }
+}
+
+/* ---------- Overlay pill ---------- */
+
+.cam-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.cam-overlay.hidden {
+  opacity: 0;
+}
+
+.cam-overlay-inner {
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--brand-dark);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(21, 49, 43, 0.1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(4px);
+}
+
+.cam-overlay.warn .cam-overlay-inner {
+  color: #a86d1a;
+  border-color: rgba(168, 109, 26, 0.3);
+}
+
+.cam-overlay.error .cam-overlay-inner {
+  color: #b54141;
+  border-color: rgba(181, 65, 65, 0.3);
+}
+
+/* Fullscreen: drop the rounded corners and outer border so the video
+ * goes edge-to-edge. */
+.cam-stage:fullscreen,
+.cam-stage:-webkit-full-screen {
+  border-radius: 0;
+  border: none;
+}
+
+/* ---------- Landing page ---------- */
+
+.landing-main {
+  align-items: center;
+}
+
+.landing-card {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(21, 49, 43, 0.08);
+  border-radius: 12px;
+  padding: 32px 36px;
+  max-width: 560px;
+  width: 100%;
+  box-shadow:
+    0 1px 2px rgba(21, 49, 43, 0.05),
+    0 14px 40px rgba(21, 49, 43, 0.08);
+}
+
+.landing-card h1 {
+  font-family: "Lexend Tera", var(--cam-font-stack);
+  font-weight: 500;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+  color: var(--brand-dark);
+  margin: 0 0 16px 0;
+}
+
+.landing-lede {
+  margin: 0 0 20px 0;
+  color: var(--brand-dark);
+}
+
+.landing-links {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.landing-links a {
+  display: inline-block;
+  font-family: var(--cam-font-stack);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--brand-orange);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.landing-links a:hover {
+  color: var(--brand-orange-hover);
+  border-bottom-color: var(--brand-orange-hover);
+}
+
+.landing-foot {
+  margin: 0;
+  color: rgba(21, 49, 43, 0.6);
+  font-size: 13px;
+}
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 640px) {
+  body.cam-page {
+    background-size: min(1600px, 140vw) auto;
+  }
+  .cam-topbar {
+    padding: 12px 16px;
+  }
+  .cam-topbar .brand-name {
+    font-size: 15px;
+  }
+  #cam-label {
+    font-size: 11px;
+  }
+  button {
+    padding: 8px 14px;
+    font-size: 13px;
+    min-height: 36px;
+  }
+  .cam-main {
+    padding: 16px 12px 32px;
+  }
+  .cam-stage {
+    border-radius: 6px;
+  }
+  .landing-card {
+    padding: 24px 22px;
+  }
+}

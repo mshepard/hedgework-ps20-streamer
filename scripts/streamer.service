@@ -1,0 +1,33 @@
+[Unit]
+Description=Streamer dual Pi Camera 3 MJPEG server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streamer
+Group=streamer
+# venv is installed by scripts/install.sh; --config points at the
+# canonical system config dir.
+ExecStart=/opt/streamer/.venv/bin/streamer --config /etc/streamer/streamer.toml
+Restart=on-failure
+RestartSec=3s
+
+# A wedged picamera2 / libcamera pipeline can keep the python process
+# alive past systemd's default 90s stop timeout. Bound the wait, and
+# escalate to SIGKILL for the whole control group so daemon threads
+# stuck inside libcamera don't keep us hostage.
+TimeoutStopSec=10
+KillMode=mixed
+
+# Minor hardening. We need /sys access for the ACT-LED tweak (best
+# effort, will warn if denied) and read access to /etc/streamer for
+# the config; the user otherwise has no write surface beyond what's
+# explicitly granted.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

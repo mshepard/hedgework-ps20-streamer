@@ -1,0 +1,49 @@
+# Streamer configuration (Phase 1)
+#
+# Phase 2 will add [schedule], [location], [network] blocks and expand
+# [power] for solar-aware HARD_SLEEP cycles. Those are intentionally
+# absent for now so the surface stays minimal.
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# Single bearer token. Required on the Authorization header (or as a
+# "?key=<token>" query parameter) for /api/status, /api/info, and the
+# /stream/* MJPEG endpoints. Tailscale ACLs remain the primary access
+# control; this token is defense-in-depth. The installer auto-generates
+# a random value on first install.
+auth_token = "change-me"
+# Brand / site label shown on the per-camera pages and in the browser
+# tab title. Empty falls back to "Streamer". Matches the umbrella
+# project brand at https://ps20.hedgework.net/.
+site_name = "HEDGEWORK @ PS 20"
+
+[camera0]
+resolution = [1280, 720]
+# IMX708 sensor controls passed through to picamera2. Keep empty unless
+# tuning a specific scene.
+controls = {}
+# Optional human-friendly label shown on the public /cam0 page header.
+# Empty falls back to "Camera 0".
+name = ""
+
+[camera1]
+resolution = [1280, 720]
+controls = {}
+name = ""
+
+[stream]
+# MJPEG output framerate. The sensor is configured with matching
+# FrameDurationLimits so producer and consumer run at the same rate
+# (no slow-consumer buffer pressure on libcamera). 1.0 fps is a good
+# balance of LTE bandwidth (~640 kbps per viewer) and a live-looking
+# feed.
+framerate = 1.0
+# JPEG quality 1-95. Higher = bigger file. 75 is a reasonable balance.
+jpeg_quality = 75
+
+[power]
+# Phase 1 honours only these two minimal settings. Phase 2 expands this
+# block.
+disable_act_led = true
+idle_grace_seconds = 10

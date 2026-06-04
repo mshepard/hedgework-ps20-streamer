@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamer"
+version = "0.1.0"
+description = "Solar-powered dual Pi Camera 3 MJPEG streamer for Raspberry Pi 5"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Hedgerow" }]
+dependencies = [
+    "aiohttp>=3.9.0",
+    "pydantic>=2.5.0",
+    "numpy>=1.26.0",
+    "Pillow>=10.0.0",
+]
+
+# Note: picamera2 is not a pip dependency. On Raspberry Pi OS install it via
+#   sudo apt install -y python3-picamera2
+# and create the project's venv with `--system-site-packages` so it is visible.
+
+[project.scripts]
+streamer = "streamer.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship every static UI asset, including files nested under media/. The bare
+# `webui/*` glob does NOT recurse.
+streamer = [
+    "webui/*.html",
+    "webui/*.js",
+    "webui/*.css",
+    "webui/media/*",
+]
