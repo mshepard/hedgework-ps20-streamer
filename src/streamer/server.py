@@ -16,16 +16,23 @@ Endpoints:
     GET /health                  -> liveness probe
 
   Token-gated (Bearer header OR ?key=):
-    GET /api/status              -> JSON service + camera status
-    GET /api/info                -> site_name + per-camera display names
-    GET /stream/cam0, /stream/cam1
+    GET  /api/status             -> JSON service + camera + power status
+    GET  /api/info               -> site_name + per-camera display names
+    GET  /api/admin/sleep-enabled  -> {"enabled": bool}
+    POST /api/admin/sleep-enabled  -> body {"enabled": bool}, persists
+                                       to /var/lib/streamer/sleep_enabled.json
+    GET  /stream/cam0, /stream/cam1
                                  -> long-lived multipart/x-mixed-replace
                                     MJPEG; one capture loop per request
 
-Phase 2 will fold a real power-mode state machine into ``/api/status``
-and gate the ``/stream/*`` endpoints on mode (returning 503 SLEEPING
-during scheduled halts, primarily relevant in ``dry_run`` since a real
-HARD_SLEEP halts the Pi).
+Phase 2 wires power-mode awareness into ``/stream/*``:
+
+* In ``ENTERING_SLEEP``, responses carry a ``Warning: 299 -
+  "sleeping in <N> minutes"`` header so the viewer UI can surface a
+  countdown without polling another endpoint.
+* In ``ASLEEP`` (reachable only under ``power.dry_run = true``; the
+  real path halts the Pi), ``/stream/*`` returns ``503 SLEEPING`` so
+  reconnecting viewers see a clean failure mode.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
@@ -42,6 +50,11 @@ from streamer.cameras import Camera, CameraManager
 from streamer.config import AppConfig
 from streamer.mjpeg import CONTENT_TYPE as MJPEG_CONTENT_TYPE
 from streamer.mjpeg import encode_jpeg, part
+from streamer.power import Mode
+
+if TYPE_CHECKING:
+    from streamer.modem import ModemProbe
+    from streamer.power import PowerManager
 
 logger = logging.getLogger("streamer.server")
 
@@ -113,10 +126,19 @@ def _make_auth_middleware(auth_token: str):
 
 
 class StreamerServer:
-    def __init__(self, config: AppConfig, cameras: CameraManager) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        cameras: CameraManager,
+        power: "PowerManager | None" = None,
+        modem: "ModemProbe | None" = None,
+    ) -> None:
         self.config = config
         self.cameras = cameras
-        # Set of in-flight stream connections, for clean shutdown.
+        self.power = power
+        self.modem = modem
+        # Set of in-flight stream connections, for clean shutdown
+        # and for the power state machine to cancel on ASLEEP entry.
         self._active_streams: set[asyncio.Task] = set()
 
     def build(self) -> web.Application:
@@ -133,12 +155,30 @@ class StreamerServer:
         # Token-gated JSON + MJPEG.
         app.router.add_get("/api/status", self._status)
         app.router.add_get("/api/info", self._info)
+        app.router.add_get("/api/admin/sleep-enabled", self._get_sleep_enabled)
+        app.router.add_post("/api/admin/sleep-enabled", self._set_sleep_enabled)
         app.router.add_get(r"/stream/cam{cam:\d+}", self._stream)
 
         # Static assets last so it doesn't shadow more specific routes.
         app.router.add_static("/static", WEBUI_DIR)
 
+        # Let the power manager close all active streams on ASLEEP.
+        if self.power is not None:
+            self.power.attach_stream_canceller(self._cancel_all_streams)
+
         return app
+
+    async def _cancel_all_streams(self) -> None:
+        """Cancel every in-flight /stream/* task. Used by PowerManager
+        on the ASLEEP transition (both real and dry_run).
+        """
+
+        if not self._active_streams:
+            return
+        n = len(self._active_streams)
+        for task in list(self._active_streams):
+            task.cancel()
+        logger.info("Cancelled %d active stream(s) for sleep entry", n)
 
     # ---------- HTML / health ----------
 
@@ -154,11 +194,22 @@ class StreamerServer:
     # ---------- JSON API ----------
 
     async def _status(self, request: web.Request) -> web.Response:
+        power_snap = self.power.snapshot() if self.power is not None else {
+            "mode": "AWAKE",
+            "sleep_enabled": True,
+            "dry_run": False,
+            "schedule_enabled": False,
+            "next_event": None,
+        }
+        modem_snap = self.modem.snapshot() if self.modem is not None else None
         return web.json_response(
             {
                 "version": __version__,
-                # Phase 2 replaces this stub with the real state machine.
-                "mode": "AWAKE",
+                "mode": power_snap["mode"],
+                "sleep_enabled": power_snap["sleep_enabled"],
+                "dry_run": power_snap["dry_run"],
+                "schedule_enabled": power_snap["schedule_enabled"],
+                "next_event": power_snap["next_event"],
                 "site_name": self.config.server.site_name or "Streamer",
                 "stream": {
                     "framerate": self.config.stream.framerate,
@@ -176,8 +227,35 @@ class StreamerServer:
                     for cam in self.cameras.all()
                 ],
                 "active_streams": len(self._active_streams),
+                "modem": modem_snap,
             }
         )
+
+    # ---------- sleep override admin ----------
+
+    async def _get_sleep_enabled(self, request: web.Request) -> web.Response:
+        if self.power is None:
+            return web.json_response({"enabled": True})
+        return web.json_response({"enabled": self.power.sleep_enabled})
+
+    async def _set_sleep_enabled(self, request: web.Request) -> web.Response:
+        if self.power is None:
+            return web.json_response(
+                {"error": "power manager not configured"}, status=503
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": "request body must be JSON"}, status=400
+            )
+        if not isinstance(body, dict) or "enabled" not in body:
+            return web.json_response(
+                {"error": "expected JSON object with 'enabled' field"},
+                status=400,
+            )
+        new_value = await self.power.set_sleep_enabled(bool(body["enabled"]))
+        return web.json_response({"enabled": new_value})
 
     async def _info(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -211,21 +289,39 @@ class StreamerServer:
                 {"error": f"unknown camera: {camera_num}"}, status=404
             )
 
+        # Refuse new stream connections while the power state machine
+        # has the service in ASLEEP. Only reachable in dry_run since
+        # real ASLEEP halts the Pi before this code can run.
+        if self.power is not None and self.power.mode == Mode.ASLEEP:
+            return web.json_response(
+                {"error": "service is in scheduled sleep"},
+                status=503,
+                reason="SLEEPING",
+            )
+
         cam = self.cameras.get(camera_num)
         peer = request.remote
         log = logger.getChild(f"stream.cam{camera_num}")
         log.info("Stream open from %s", peer)
 
-        resp = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": MJPEG_CONTENT_TYPE,
-                "Cache-Control": "no-store, no-cache, must-revalidate, private",
-                "Pragma": "no-cache",
-                "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
-                "Connection": "close",
-            },
-        )
+        # Response headers. During ENTERING_SLEEP we tack on a
+        # ``Warning: 299`` so the viewer JS can show a sleep-soon
+        # banner without polling another endpoint.
+        headers = {
+            "Content-Type": MJPEG_CONTENT_TYPE,
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
+            "Connection": "close",
+        }
+        if self.power is not None and self.power.mode == Mode.ENTERING_SLEEP:
+            mins = self.power.minutes_until_sleep()
+            if mins is not None:
+                headers["Warning"] = (
+                    f'299 - "sleeping in {mins} minutes"'
+                )
+
+        resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
 
         task = asyncio.current_task()

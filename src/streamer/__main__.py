@@ -13,7 +13,17 @@ from aiohttp import web
 from streamer import __version__
 from streamer.cameras import Camera, CameraManager, build_manager
 from streamer.config import AppConfig, load_config
+from streamer.modem import ModemProbe
+from streamer.power import PowerManager
 from streamer.server import StreamerServer
+
+
+# Where the sleep_enabled override + (future) power state lives.
+# Created by the installer with mode 0750, owner streamer:streamer.
+# Falls back to a per-user dir in the venv when running from a checkout
+# (developer bench mode) so we don't need write access to /var.
+DEFAULT_STATE_DIR = Path("/var/lib/streamer")
+DEV_STATE_DIR = Path("/tmp/streamer-state")
 
 
 # How long the warm-up pass waits for the first frame from each camera.
@@ -61,7 +71,7 @@ def _apply_phase1_power_hooks(disable_act_led: bool) -> None:
 
 async def _warmup_cameras(
     cameras: CameraManager, config: AppConfig, log: logging.Logger
-) -> None:
+) -> list[Camera]:
     """Start both cameras concurrently and wait for the first frame.
 
     Concurrent rather than sequential: starting both picamera2 instances
@@ -71,14 +81,14 @@ async def _warmup_cameras(
     one at a time has been observed to leave the second one in a
     state where its first frame takes >5 s to deliver.
 
-    If ``power.keep_cameras_warm`` is set (default), each camera is
-    left at refcount=1 so it stays running for the lifetime of the
-    service. Viewers then never see a cold-start delay. Otherwise the
-    warm-up acquires are released and each camera follows the usual
-    ``idle_grace_seconds`` idle-stop path.
+    Returns the list of cameras whose warmup succeeded *and* are being
+    held at refcount=1 by this function. The Phase 2 ``PowerManager``
+    takes ownership of those refcounts via ``apply_initial_hold`` so
+    it can release them when the schedule transitions out of AWAKE.
     """
 
     hold = config.power.keep_cameras_warm
+    held: list[Camera] = []
 
     async def _warm_one(cam: Camera) -> None:
         try:
@@ -121,8 +131,55 @@ async def _warmup_cameras(
                         "Release after warmup failed for camera %d",
                         cam.camera_num,
                     )
+            else:
+                held.append(cam)
 
     await asyncio.gather(*(_warm_one(cam) for cam in cameras.all()))
+    return held
+
+
+def _resolve_state_dir(log: logging.Logger) -> Path:
+    """Pick a writable directory for the sleep-override file.
+
+    Prefers the installer-managed ``/var/lib/streamer``. Falls back
+    to a /tmp directory when running from a checkout without root —
+    this means a bench Pi or developer laptop doesn't crash trying
+    to persist state, at the cost of losing the override across
+    reboots in that environment.
+    """
+
+    if DEFAULT_STATE_DIR.is_dir():
+        return DEFAULT_STATE_DIR
+    log.warning(
+        "%s missing; using developer fallback %s for sleep-override state",
+        DEFAULT_STATE_DIR,
+        DEV_STATE_DIR,
+    )
+    DEV_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return DEV_STATE_DIR
+
+
+def _validate_schedule_config(config: AppConfig, log: logging.Logger) -> bool:
+    """Returns True if the schedule should run, False if it must be disabled.
+
+    Mutates nothing; the caller decides what to do. We refuse to run
+    the schedule when ``[location]`` is still at default values
+    because that would compute sunrise/sunset for (0, 0) — possibly
+    putting the active window in the wrong half of the day.
+    """
+
+    if not config.schedule.enabled:
+        return False
+    lat = config.location.latitude
+    lon = config.location.longitude
+    if lat == 0.0 and lon == 0.0:
+        log.error(
+            "[schedule].enabled = true but [location] is at its default "
+            "(latitude=0, longitude=0). Set real coordinates in "
+            "streamer.toml. Schedule will run as DISABLED until fixed."
+        )
+        return False
+    return True
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -169,27 +226,68 @@ def main(argv: list[str] | None = None) -> int:
 
     _apply_phase1_power_hooks(config.power.disable_act_led)
 
+    # If the schedule is configured but [location] is unset, log a
+    # loud error and force the schedule off so the PowerManager
+    # stays in always-AWAKE mode instead of computing sunrise for
+    # (0, 0).
+    if not _validate_schedule_config(config, log) and config.schedule.enabled:
+        config.schedule.enabled = False
+
+    state_dir = _resolve_state_dir(log)
+
     cameras = build_manager(config)
-    server = StreamerServer(config, cameras)
+    power_manager = PowerManager(config, cameras, state_dir=state_dir)
+    modem_probe = ModemProbe(config.network)
+    server = StreamerServer(
+        config, cameras, power=power_manager, modem=modem_probe
+    )
     app = server.build()
 
-    async def _warmup_pipelines(_app: web.Application) -> None:
-        """Start both cameras at service boot and (optionally) keep
-        them running so viewer connects never pay the cold-start cost.
+    log.info(
+        "Power: schedule_enabled=%s dry_run=%s keep_cameras_warm=%s",
+        config.schedule.enabled,
+        config.power.dry_run,
+        config.power.keep_cameras_warm,
+    )
+    if config.schedule.enabled:
+        log.info(
+            "Schedule: lat=%.5f lon=%.5f tz=%s "
+            "sunrise_offset=%+dm sunset_offset=%+dm "
+            "warn_before=%dm wake_lead=%dm",
+            config.location.latitude,
+            config.location.longitude,
+            config.location.timezone,
+            config.schedule.sunrise_offset_minutes,
+            config.schedule.sunset_offset_minutes,
+            config.schedule.warn_minutes_before_sleep,
+            config.schedule.wake_lead_minutes,
+        )
+    log.info(
+        "Modem probe: target=%s interval=%ds timeout=%ds",
+        config.network.modem_probe_target,
+        config.network.modem_probe_interval_seconds,
+        config.network.modem_probe_timeout_seconds,
+    )
 
-        Best-effort: a per-camera failure here is logged and won't
-        stop the service; the regular capture-timeout recovery path
-        picks up the slack on the next viewer connect.
+    async def _warmup_pipelines(_app: web.Application) -> None:
+        """Warm the cameras, then hand them to the PowerManager.
+
+        Order matters: PowerManager.start() does an immediate state
+        evaluation, and we want the cameras already warmed and held
+        by the time that runs. If the initial decision is ASLEEP,
+        the PowerManager will release them again right away — see
+        the inline note in ``power.py`` about boot-into-ASLEEP.
         """
 
         log = logging.getLogger("streamer.warmup")
         mode = "hold" if config.power.keep_cameras_warm else "touch"
         log.info("Warming up camera pipelines (concurrent, mode=%s)", mode)
-        await _warmup_cameras(cameras, config, log)
+        held = await _warmup_cameras(cameras, config, log)
         if config.power.keep_cameras_warm:
             log.info(
-                "Warmup complete; holding cameras warm "
-                "(power.keep_cameras_warm = true)"
+                "Warmup complete; %d camera(s) held warm; "
+                "handing refcounts to power manager",
+                len(held),
             )
         else:
             log.info(
@@ -197,8 +295,16 @@ def main(argv: list[str] | None = None) -> int:
                 "(idle stop in %ds)",
                 config.power.idle_grace_seconds,
             )
+        await power_manager.apply_initial_hold(held)
+        await power_manager.start()
+        await modem_probe.start()
 
     async def _on_cleanup(_app: web.Application) -> None:
+        # Best-effort stop the periodic tasks before tearing down
+        # cameras so they don't try to re-acquire a closed pipeline
+        # mid-shutdown.
+        await power_manager.stop()
+        await modem_probe.stop()
         await cameras.shutdown()
 
     app.on_startup.append(_warmup_pipelines)

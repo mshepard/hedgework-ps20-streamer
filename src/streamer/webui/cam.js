@@ -20,6 +20,7 @@ const els = {
   start: document.getElementById("start-btn"),
   stop: document.getElementById("stop-btn"),
   fullscreen: document.getElementById("fullscreen-btn"),
+  statusBanner: document.getElementById("status-banner"),
 };
 
 const state = {
@@ -29,6 +30,12 @@ const state = {
   cameraName: null,
   streaming: false,
 };
+
+// How often we poll /api/status for the sleep schedule banner. Once
+// a minute is plenty: the only time-sensitive case is the
+// ENTERING_SLEEP countdown, and minute-grained precision is fine
+// for a "sleeping in N minutes" message.
+const STATUS_POLL_MS = 60 * 1000;
 
 function parseCameraNum() {
   const m = location.pathname.match(/\/cam(\d+)/);
@@ -77,6 +84,62 @@ async function fetchBranding() {
     if (resp.ok) applyBranding(await resp.json());
   } catch (_) {
     // Best-effort; default branding stays in place.
+  }
+}
+
+// ---------- Sleep-schedule status banner ----------
+
+function formatTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function minutesUntil(iso) {
+  const target = new Date(iso).getTime();
+  const now = Date.now();
+  return Math.max(0, Math.round((target - now) / 60000));
+}
+
+function renderStatusBanner(status) {
+  if (!status || !els.statusBanner) return;
+
+  // Schedule disabled: nothing to surface. Keeps the UI clean for
+  // Phase 1-style deployments that don't run a sleep schedule.
+  if (!status.schedule_enabled) {
+    els.statusBanner.classList.add("hidden");
+    return;
+  }
+
+  const mode = status.mode;
+  if (mode === "ENTERING_SLEEP" && status.next_event) {
+    const mins = minutesUntil(status.next_event.at);
+    els.statusBanner.textContent =
+      `Sleeping in ${mins} minute${mins === 1 ? "" : "s"} ` +
+      `(at ${formatTime(status.next_event.at)})`;
+    els.statusBanner.classList.remove("hidden", "asleep");
+    return;
+  }
+  if (mode === "ASLEEP" && status.next_event) {
+    els.statusBanner.textContent =
+      `Service is sleeping. Next wake at ${formatTime(status.next_event.at)}.`;
+    els.statusBanner.classList.remove("hidden");
+    els.statusBanner.classList.add("asleep");
+    return;
+  }
+  // AWAKE (or anything else): hide.
+  els.statusBanner.classList.add("hidden");
+}
+
+async function fetchStatus() {
+  if (!state.key) return;
+  try {
+    const resp = await fetch(
+      `/api/status?key=${encodeURIComponent(state.key)}`,
+      { cache: "no-store" },
+    );
+    if (resp.ok) renderStatusBanner(await resp.json());
+  } catch (_) {
+    // Best-effort; the banner just won't update this tick.
   }
 }
 
@@ -154,6 +217,11 @@ function init() {
   });
 
   fetchBranding();
+  // Kick off the status poller. The first call lands inside ~1s and
+  // populates the banner if a schedule is active; subsequent calls
+  // refresh the countdown.
+  fetchStatus();
+  setInterval(fetchStatus, STATUS_POLL_MS);
 }
 
 window.addEventListener("DOMContentLoaded", init);

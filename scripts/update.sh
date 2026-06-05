@@ -16,7 +16,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_NAME="streamer"
 INSTALL_PREFIX="/opt/streamer"
+STATE_DIR="/var/lib/streamer"
 SERVICE_FILE="/etc/systemd/system/streamer.service"
+SUDOERS_FILE="/etc/sudoers.d/streamer"
 STOP_TIMEOUT=12
 
 require_root() {
@@ -40,6 +42,41 @@ refresh_systemd_unit() {
     fi
 }
 
+# Phase 2: idempotently ensure the state dir and sudoers entry exist
+# so updating from a Phase 1 install picks up the new privileges.
+ensure_state_dir() {
+    if [[ ! -d "${STATE_DIR}" ]]; then
+        log "Creating ${STATE_DIR}"
+        install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 "${STATE_DIR}"
+    fi
+}
+
+ensure_sudoers() {
+    local desired
+    desired=$(cat <<EOF
+# Streamer HARD_SLEEP privileges. Managed by scripts/install.sh — do not
+# edit by hand; re-running the installer rewrites this file.
+${USER_NAME} ALL=(root) NOPASSWD: /usr/sbin/rtcwake, /usr/bin/systemctl poweroff
+EOF
+)
+    if [[ -f "${SUDOERS_FILE}" ]] && diff -q \
+        <(printf '%s\n' "${desired}") "${SUDOERS_FILE}" >/dev/null 2>&1
+    then
+        return
+    fi
+    log "Refreshing ${SUDOERS_FILE}"
+    local tmp
+    tmp=$(mktemp)
+    printf '%s\n' "${desired}" > "${tmp}"
+    if ! visudo -cf "${tmp}" >/dev/null; then
+        log "ERROR: generated sudoers file failed visudo check; leaving existing file untouched"
+        rm -f "${tmp}"
+        return
+    fi
+    install -o root -g root -m 0440 "${tmp}" "${SUDOERS_FILE}"
+    rm -f "${tmp}"
+}
+
 stop_service() {
     if ! systemctl is-active --quiet streamer.service; then
         log "streamer.service was not running"
@@ -59,7 +96,12 @@ stop_service() {
 
 pip_install() {
     log "Reinstalling Streamer from ${REPO_ROOT}"
-    "${INSTALL_PREFIX}/.venv/bin/pip" install --upgrade --force-reinstall --no-deps "${REPO_ROOT}"
+    # Phase 2 added the ``astral`` dependency. Drop --no-deps so any
+    # newly-listed runtime dependency in pyproject.toml is picked up
+    # automatically on update. pip is smart enough to skip what's
+    # already satisfied, so this only meaningfully slows the first
+    # update after a new dep is added.
+    "${INSTALL_PREFIX}/.venv/bin/pip" install --upgrade --force-reinstall "${REPO_ROOT}"
     chown -R "${USER_NAME}:${USER_NAME}" "${INSTALL_PREFIX}"
 }
 
@@ -77,6 +119,8 @@ start_service() {
 main() {
     require_root
     refresh_systemd_unit
+    ensure_state_dir
+    ensure_sudoers
     stop_service
     pip_install
     start_service

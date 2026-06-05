@@ -302,6 +302,36 @@ button:disabled {
   border: none;
 }
 
+/* ---------- Status banner (sleep schedule countdown) ---------- */
+
+/* Slim strip below the topbar. cam.js shows it during ENTERING_SLEEP
+ * with a countdown ("Sleeping in 12 minutes") and during ASLEEP /
+ * dry_run with a static message. Hidden by default and during AWAKE. */
+.status-banner {
+  padding: 8px 32px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--brand-yellow);
+  color: var(--brand-dark);
+  border-bottom: 1px solid rgba(21, 49, 43, 0.08);
+}
+
+.status-banner.hidden {
+  display: none;
+}
+
+.status-banner.asleep {
+  background: var(--brand-pink);
+  color: var(--brand-dark);
+}
+
+@media (max-width: 640px) {
+  .status-banner {
+    padding: 8px 16px;
+    font-size: 12px;
+  }
+}
+
 /* ---------- Landing page ---------- */
 
 .landing-main {

@@ -7,8 +7,6 @@
 # What this does:
 #   * Installs apt dependencies (picamera2, libcamera, venv tooling)
 #   * Optionally installs Tailscale
-#   * If a prior 'dualstream.service' is enabled, stops and disables it
-#     (its venv + config are left in place for rollback)
 #   * Creates the 'streamer' system user (member of `video`)
 #   * Creates /etc/streamer/, /opt/streamer/
 #   * Builds a venv at /opt/streamer/.venv with --system-site-packages
@@ -35,7 +33,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_NAME="streamer"
 INSTALL_PREFIX="/opt/streamer"
 CONFIG_DIR="/etc/streamer"
+STATE_DIR="/var/lib/streamer"
 SERVICE_FILE="/etc/systemd/system/streamer.service"
+SUDOERS_FILE="/etc/sudoers.d/streamer"
 
 require_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
@@ -63,12 +63,17 @@ check_platform() {
 install_apt_deps() {
     log "Updating apt and installing system dependencies"
     DEBIAN_FRONTEND=noninteractive apt-get update -y
+    # iputils-ping: used by streamer.modem for the LTE reachability probe.
+    # util-linux: provides /usr/sbin/rtcwake (ships in the default Pi OS
+    # image but we list it for clarity and to catch slimmed installs).
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
         python3-picamera2 \
         libcamera-tools \
+        iputils-ping \
+        util-linux \
         ca-certificates \
         curl
 }
@@ -87,23 +92,6 @@ install_tailscale() {
     log "Run 'sudo tailscale up' to authenticate with your tailnet"
 }
 
-disable_predecessor() {
-    # Streamer takes over port 8080 from DualStream. If the latter is
-    # running we must stop it before our service can bind. We leave the
-    # old venv and config in place so a rollback is one systemctl call
-    # away.
-    if systemctl list-unit-files | grep -q '^dualstream\.service'; then
-        if systemctl is-active --quiet dualstream.service; then
-            log "Stopping previously-installed dualstream.service"
-            systemctl stop dualstream.service || true
-        fi
-        if systemctl is-enabled --quiet dualstream.service 2>/dev/null; then
-            log "Disabling dualstream.service (rollback: 'systemctl enable --now dualstream')"
-            systemctl disable dualstream.service || true
-        fi
-    fi
-}
-
 create_user() {
     if ! id "${USER_NAME}" >/dev/null 2>&1; then
         log "Creating system user ${USER_NAME}"
@@ -116,9 +104,37 @@ create_user() {
 }
 
 create_directories() {
-    log "Creating ${INSTALL_PREFIX} and ${CONFIG_DIR}"
+    log "Creating ${INSTALL_PREFIX}, ${CONFIG_DIR}, and ${STATE_DIR}"
     install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0755 "${INSTALL_PREFIX}"
     install -d -o root -g root -m 0755 "${CONFIG_DIR}"
+    # State directory: holds the sleep_enabled.json override file (and
+    # whatever else the runtime needs to persist across restarts). Mode
+    # 0750 so only the streamer user and root can read it.
+    install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 "${STATE_DIR}"
+}
+
+install_sudoers() {
+    # The streamer user needs to invoke rtcwake (set the RTC alarm) and
+    # systemctl poweroff (initiate clean shutdown) to perform HARD_SLEEP.
+    # The sudoers.d entry below is the minimum that allows exactly those
+    # two commands without a password and nothing else. ``visudo -cf``
+    # validates syntax before the file goes live so a typo can't lock
+    # the system out of sudo.
+    log "Installing sudoers entry at ${SUDOERS_FILE}"
+    local tmp
+    tmp=$(mktemp)
+    cat > "${tmp}" <<EOF
+# Streamer HARD_SLEEP privileges. Managed by scripts/install.sh — do not
+# edit by hand; re-running the installer rewrites this file.
+${USER_NAME} ALL=(root) NOPASSWD: /usr/sbin/rtcwake, /usr/bin/systemctl poweroff
+EOF
+    if ! visudo -cf "${tmp}" >/dev/null; then
+        log "ERROR: generated sudoers file failed visudo check; aborting"
+        rm -f "${tmp}"
+        exit 1
+    fi
+    install -o root -g root -m 0440 "${tmp}" "${SUDOERS_FILE}"
+    rm -f "${tmp}"
 }
 
 # Replace one TOML string-valued key on a line of the form
@@ -273,9 +289,9 @@ main() {
     check_platform
     install_apt_deps
     install_tailscale
-    disable_predecessor
     create_user
     create_directories
+    install_sudoers
     install_config
     setup_venv
     install_systemd_unit

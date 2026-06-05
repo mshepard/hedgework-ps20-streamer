@@ -10,7 +10,7 @@ Pixel-format note: ``picamera2`` has the historical quirk that its
 ``"BGR888"`` format produces RGB-ordered data. We use ``BGR888`` so
 callers receive RGB without an explicit channel swap.
 
-Reliability design (lessons from the predecessor project, DualStream):
+Reliability design:
 
 * Each camera owns a dedicated single-thread ``ThreadPoolExecutor``. All
   blocking picamera2 calls (start / stop / capture / recover) run on it.
@@ -187,8 +187,7 @@ class Camera:
         # this so Pillow's mode="RGB" consumes the array directly with no
         # explicit swap. ``buffer_count=2`` is the minimum that lets the
         # capture loop run smoothly without letting stale buffers
-        # accumulate (DualStream's hard-won value — 4 stalled under
-        # the dual-IMX708 setup).
+        # accumulate — higher values stalled under the dual-IMX708 setup.
         config = picam2.create_video_configuration(
             main={"size": (width, height), "format": "BGR888"},
             controls={

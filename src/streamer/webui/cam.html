@@ -37,6 +37,11 @@
       </div>
     </header>
 
+    <!-- Status banner: rendered hidden by default. cam.js polls
+         /api/status once a minute and surfaces ENTERING_SLEEP /
+         ASLEEP information here. AWAKE state leaves it hidden. -->
+    <div id="status-banner" class="status-banner hidden" role="status"></div>
+
     <main class="cam-main">
       <div class="cam-stage" id="cam-stage">
         <!-- The MJPEG stream renders into this <img>. While the page is

@@ -1,8 +1,10 @@
-# Streamer configuration (Phase 1)
+# Streamer configuration
 #
-# Phase 2 will add [schedule], [location], [network] blocks and expand
-# [power] for solar-aware HARD_SLEEP cycles. Those are intentionally
-# absent for now so the surface stays minimal.
+# Phase 1 surface: [server], [camera0], [camera1], [stream], [power].
+# Phase 2 adds [location], [schedule], [network] for the solar-aware
+# HARD_SLEEP cycle. The schedule is opt-in via [schedule].enabled —
+# when left at its default (false), the service runs in the Phase 1
+# "always AWAKE" regime and [location] is not consulted.
 
 [server]
 host = "0.0.0.0"
@@ -43,14 +45,52 @@ framerate = 1.0
 jpeg_quality = 75
 
 [power]
-# Phase 1 honours only these minimal settings. Phase 2 expands this
-# block.
 disable_act_led = true
 idle_grace_seconds = 10
 # Hold both cameras open from service start, eliminating the first-frame
 # latency (~3-10s at 1 fps) that viewers would otherwise see on a fresh
 # connect to an idle camera. Costs ~1 W of camera power continuously.
-# Phase 2's schedule layer is expected to flip this off outside the
-# active window so the cost is only paid while the system is supposed
-# to be serving frames anyway.
+# The Phase 2 power state machine automatically releases this hold
+# outside the active window — see [schedule] below.
 keep_cameras_warm = true
+# When true, the state machine still transitions
+# AWAKE -> ENTERING_SLEEP -> ASLEEP on the configured schedule but
+# does NOT actually call rtcwake / systemctl poweroff. Instead,
+# /stream/* returns 503 SLEEPING during the ASLEEP window. Useful
+# for rehearsing a sleep cycle on a bench Pi without halting it.
+dry_run = false
+
+[location]
+# Required when [schedule].enabled = true. The astral library uses
+# these to compute sunrise/sunset for the current civil day. Phase 1
+# deployments that don't enable the schedule can leave these at zero.
+latitude = 0.0
+longitude = 0.0
+# IANA tz name; e.g. "America/New_York", "America/Los_Angeles",
+# "Europe/Berlin". "UTC" is a safe fallback but timestamps in
+# /api/status will be in UTC.
+timezone = "UTC"
+
+[schedule]
+# Master switch. When false, the service is always AWAKE and the
+# rest of this block + [location] are not consulted.
+enabled = false
+# Offsets applied to astronomical sunrise / sunset. Negative values
+# move the event earlier in the day; positive later. Useful for
+# pulling the AWAKE window earlier than civil twilight, etc.
+sunrise_offset_minutes = 0
+sunset_offset_minutes = 0
+# Lead-time before sunset to enter ENTERING_SLEEP mode. During this
+# window /stream/* responses carry a Warning header that the viewer
+# UI surfaces as a banner; new connections are still served.
+warn_minutes_before_sleep = 15
+# How many minutes before sunrise the RTC alarm should fire, so the
+# Pi has time to boot and warm both cameras before viewers connect.
+wake_lead_minutes = 5
+
+[network]
+# LTE / uplink health probe. The result is reported on /api/status;
+# Phase 2 does no automatic remediation, this is diagnosis only.
+modem_probe_target = "1.1.1.1"
+modem_probe_interval_seconds = 60
+modem_probe_timeout_seconds = 5

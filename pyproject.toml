@@ -15,6 +15,9 @@ dependencies = [
     "pydantic>=2.5.0",
     "numpy>=1.26.0",
     "Pillow>=10.0.0",
+    # Phase 2: sunrise/sunset for the [schedule] block. Pure Python, no
+    # compiled deps, ships its own embedded tzdata for offline use.
+    "astral>=3.2",
 ]
 
 # Note: picamera2 is not a pip dependency. On Raspberry Pi OS install it via

@@ -6,19 +6,22 @@ configurable framerate (default 1 fps) by visiting `/cam0` or `/cam1`.
 Everything goes over HTTPS/TCP — the public delivery path has no UDP,
 no WebRTC, no client-side polling state machine.
 
-This project supersedes the earlier WebRTC-based **DualStream** prototype.
-The installer detects and disables the legacy `dualstream.service` if it
-finds one, leaving its venv and config in place for rollback.
-
 ## What you get
 
 - `GET /cam0`, `GET /cam1` — branded per-camera viewer pages
 - `GET /stream/cam0`, `/stream/cam1` — `multipart/x-mixed-replace` MJPEG
-  served at the configured framerate; one capture loop per connection
-- `GET /api/status` — JSON: version, mode, per-camera state, active
-  stream count
+  served at the configured framerate; one capture loop per connection.
+  During the scheduled `ENTERING_SLEEP` window the response carries a
+  `Warning: 299 - "sleeping in N minutes"` header that the viewer JS
+  surfaces as a banner.
+- `GET /api/status` — JSON: version, power mode, next schedule event,
+  per-camera state, active stream count, LTE modem reachability
 - `GET /api/info` — JSON: site name + per-camera display labels (used
   by the viewer pages for branding)
+- `GET  /api/admin/sleep-enabled` — JSON: current sleep override state
+- `POST /api/admin/sleep-enabled` — `{"enabled": bool}` to suppress
+  (or re-enable) the schedule, persisted to
+  `/var/lib/streamer/sleep_enabled.json`
 - `GET /health` — liveness probe (no auth)
 - Branded landing page at `/`
 
@@ -53,25 +56,65 @@ At service boot both cameras are warmed in parallel and (with
 lifetime of the service, so viewer connects never pay the cold-start
 cost.
 
+## Power state machine (Phase 2)
+
+When `schedule.enabled = true`, a small state machine in
+[src/streamer/power.py](src/streamer/power.py) drives the service
+between three modes based on astronomical sunrise/sunset for the
+configured `[location]`:
+
+```
+        AWAKE  ──(sunset − warn_minutes_before_sleep)──▶  ENTERING_SLEEP
+          ▲                                                     │
+          │                                                     │ (sunset)
+          │                                                     ▼
+   (RTC fires near sunrise,                                 ASLEEP
+    Pi boots, fresh
+    service starts)                                  (sudo rtcwake -m no -t <next_wake>
+                                                      then sudo systemctl poweroff)
+```
+
+In `ENTERING_SLEEP` the stream keeps running but each `/stream/*`
+response carries a `Warning` header that the viewer UI surfaces as
+a "Sleeping in N minutes" banner.
+
+In `ASLEEP` the manager releases the warmup-held camera refcounts,
+cancels in-flight streams, sets the RTC alarm for the next sunrise
+(minus `wake_lead_minutes`), and powers the Pi down. On wake the
+system boots fresh; the service starts, recomputes the schedule,
+and either resumes serving (if it's daytime now) or sleeps again
+(if RTC fired early).
+
+`power.dry_run = true` short-circuits the actual `rtcwake` /
+`poweroff` calls. The state machine still transitions to ASLEEP and
+`/stream/*` returns `503 SLEEPING`, so you can rehearse a sleep
+cycle on a bench Pi without halting it.
+
+The sleep override (`POST /api/admin/sleep-enabled` with
+`{"enabled": false}`) suppresses sleep indefinitely: the state
+machine stays in AWAKE regardless of the schedule. The value is
+persisted to `/var/lib/streamer/sleep_enabled.json` and reloaded
+across restarts and (real) wake cycles.
+
 ## Hardware
 
 - Raspberry Pi 5 with the `imx708,cam0` + `imx708,cam1` dtoverlays
   enabled in `/boot/firmware/config.txt`
 - Two Pi Camera 3 modules
 - For the field deployment: 100 W solar panel + 12 V 18 Ah LiFePO4
-  battery + RTC battery on J5 BAT (used in Phase 2 for `HARD_SLEEP`)
+  battery + RTC battery on J5 BAT (required for `HARD_SLEEP` wake)
 - LTE uplink (e.g. Linovision IOT-R41) and Tailscale for remote access
 
 ## Installation
 
 ```bash
-# On a fresh Pi 5 (or upgrading from DualStream):
+# On a fresh Pi 5:
 git clone <repo-url> Streamer
 cd Streamer
 sudo bash scripts/install.sh --install-tailscale   # omit flag if tailscale already installed
 
-# Copy media assets (artwork, favicon). These ship in DualStream and are
-# not in this repo; place them where the installed package can see them:
+# Copy media assets (artwork, favicon) into the installed package so
+# the viewer pages can render with branding:
 sudo cp /path/to/Hedge-icon.png \
     /opt/streamer/.venv/lib/python*/site-packages/streamer/webui/media/
 sudo cp /path/to/PS20-hedgework-ARTWORK-JohannaKindvall-10-alpha.png \
@@ -97,18 +140,6 @@ sudo bash scripts/update.sh
 This refreshes the venv install, updates the systemd unit if it
 changed, and restarts the service with explicit stop / kill / start so
 a wedged python process can't drag systemd's default 90 s timeout.
-
-### Rolling back to DualStream
-
-```bash
-sudo systemctl stop streamer
-sudo systemctl disable streamer
-sudo systemctl enable --now dualstream
-```
-
-The DualStream venv and config under `/opt/dualstream/` and
-`/etc/dualstream/` are left in place by the Streamer installer so this
-works without re-cloning anything.
 
 ## Configuration
 
@@ -142,10 +173,39 @@ idle_grace_seconds = 10      # how long a refcount=0 camera lingers
 keep_cameras_warm  = true    # hold both cameras open from boot;
                              # eliminates ~5-10 s viewer cold-start
                              # latency at the cost of ~1 W idle power.
-                             # Phase 2's schedule layer is expected
-                             # to flip this off outside the active
-                             # window.
+                             # Released automatically outside the
+                             # active window by the Phase 2 power
+                             # state machine.
+dry_run            = false   # when true, the state machine still
+                             # transitions to ASLEEP at sunset but
+                             # never calls rtcwake / poweroff —
+                             # /stream/* returns 503 SLEEPING.
+
+# ----- Phase 2 (opt-in) -----
+
+[location]                   # required when [schedule].enabled = true
+latitude  = 0.0
+longitude = 0.0
+timezone  = "UTC"            # IANA tz name, e.g. "America/New_York"
+
+[schedule]
+enabled                   = false  # master opt-in for the power state machine
+sunrise_offset_minutes    = 0      # +/- minutes around astronomical sunrise
+sunset_offset_minutes     = 0      # +/- minutes around astronomical sunset
+warn_minutes_before_sleep = 15     # ENTERING_SLEEP lead-time
+wake_lead_minutes         = 5      # RTC fires this many minutes early
+
+[network]
+modem_probe_target           = "1.1.1.1"
+modem_probe_interval_seconds = 60
+modem_probe_timeout_seconds  = 5
 ```
+
+When `[schedule].enabled = true` but `[location]` is still at its
+default `(0, 0)`, the service logs a loud error at startup and runs
+with the schedule disabled — refusing to compute sunrise/sunset for
+the Null Island origin is safer than silently halting the Pi at the
+wrong time. Set real coordinates and restart.
 
 ### Bandwidth and power
 
@@ -159,7 +219,7 @@ keep_cameras_warm  = true    # hold both cameras open from boot;
   framerate — each one gets `framerate / N` fps because the
   per-camera capture executor is single-threaded and serializes
   `cam.capture()`. The sensor is still producing at the full rate;
-  see Phase 2 / *shared frame fanout* for the planned fix.
+  see Phase 2.5 / *shared frame fanout* for the planned fix.
 
 ### CSI overlays
 
@@ -186,26 +246,56 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/status | pyt
 # Verify the MJPEG endpoint headers
 curl -s -I -H "Authorization: Bearer $TOKEN" http://localhost:8080/stream/cam0
 # Expect: HTTP/1.1 200 OK, Content-Type: multipart/x-mixed-replace; boundary=frame
+# During ENTERING_SLEEP an extra `Warning: 299 - "sleeping in N minutes"` header
+# also appears.
 
-# Update after pulling code changes
+# Read the sleep override
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/admin/sleep-enabled
+
+# Suppress scheduled sleep indefinitely (e.g. for a special-event night)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"enabled": false}' \
+     http://localhost:8080/api/admin/sleep-enabled
+
+# Re-enable the schedule
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"enabled": true}' \
+     http://localhost:8080/api/admin/sleep-enabled
+
+# Update after pulling code changes (also refreshes sudoers + state dir)
 sudo bash scripts/update.sh
 ```
 
-## Phase 2 (planned)
+## Phase 2 (shipped)
 
-- Scheduled `HARD_SLEEP` via `rtcwake`: time-of-day + astral sunrise/
-  sunset windows. The RTC battery on the Pi 5 J5 BAT header makes the
-  full-halt strategy possible.
-- `mode` field in `/api/status` (`AWAKE` / `ASLEEP`).
-- `POST /api/admin/sleep-enabled` toggle for indefinite sleep
-  suppression, persisted to a file so it survives restart.
-- LTE modem ping probe surfaced in `/api/status`.
-- `/stream/*` returns `503 SLEEPING` when the mode state machine has
-  declared the Pi asleep (mostly relevant in `dry_run` since a real
-  HARD_SLEEP halts the Pi).
-- Schedule layer flips `power.keep_cameras_warm` off outside the
-  active window so the ~1 W camera-idle cost is only paid while the
-  system is supposed to be serving frames.
+Implemented in this release:
+
+- Scheduled `HARD_SLEEP` via `rtcwake -m no -t <next_wake>` followed by
+  `systemctl poweroff`. Astral-based; the active window is
+  `[sunrise + sunrise_offset, sunset + sunset_offset]`.
+- `mode` field in `/api/status`: `AWAKE` / `ENTERING_SLEEP` / `ASLEEP`.
+- `next_event` field in `/api/status`: `{type: "sleep" | "wake", at: "..."}`.
+- `POST /api/admin/sleep-enabled` toggle (and `GET` to read), persisted
+  to `/var/lib/streamer/sleep_enabled.json` so it survives restart and
+  HARD_SLEEP cycles.
+- LTE modem ping probe in [src/streamer/modem.py](src/streamer/modem.py);
+  result surfaces as the `modem` field of `/api/status`.
+- `/stream/*` returns `503 SLEEPING` when the state machine has declared
+  the Pi asleep (only observable in `dry_run`; the real path halts the
+  Pi before the response could be sent).
+- `/stream/*` carries `Warning: 299 - "sleeping in N minutes"` during
+  `ENTERING_SLEEP`; the viewer JS surfaces it as a banner.
+- Camera coupling: the state machine releases `keep_cameras_warm`
+  refcounts on transition to ASLEEP, so the ~1 W camera-idle cost is
+  only paid while the system is supposed to be serving frames.
+- Sudoers entry installed at `/etc/sudoers.d/streamer` granting the
+  service user exactly `/usr/sbin/rtcwake` and `/usr/bin/systemctl
+  poweroff` (no other privileged commands).
+
+## Phase 2.5 (planned)
+
 - **Shared frame fanout per camera.** Replace the per-connection
   capture loop with a single per-camera capture-and-encode loop that
   publishes each finished JPEG to an `asyncio.Event` (or per-viewer
@@ -215,6 +305,3 @@ sudo bash scripts/update.sh
   camera work and no extra JPEG encoding. Estimated change: ~50
   lines across `cameras.py` (publisher) and `server.py` (subscriber
   in `_stream`); the public surface is unchanged.
-
-None of these change the streaming surface; they layer on top of the
-existing `cameras.py` and `server.py` cleanly.

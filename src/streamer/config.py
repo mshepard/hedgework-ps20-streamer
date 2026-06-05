@@ -1,8 +1,11 @@
 """Configuration loader.
 
-TOML file -> pydantic settings model. The Phase 1 surface is intentionally
-narrow; Phase 2 will expand ``PowerConfig`` and add ``[schedule]``,
-``[location]``, and ``[network]`` blocks for solar-aware sleep cycles.
+TOML file -> pydantic settings model. Phase 2 added the ``[location]``,
+``[schedule]``, and ``[network]`` blocks plus the ``power.dry_run`` flag
+for the solar-aware sleep cycle. ``[schedule].enabled`` is the master
+switch — when ``false`` (the default), the rest of the schedule block
+and ``[location]`` are not required, and the service behaves exactly
+like Phase 1.
 """
 
 from __future__ import annotations
@@ -65,7 +68,15 @@ class StreamConfig(BaseModel):
 
 
 class PowerConfig(BaseModel):
-    """Phase 1 power settings. Phase 2 expands this block significantly."""
+    """Power settings.
+
+    Phase 2 added ``dry_run``: when true, the state machine still
+    transitions through ``ENTERING_SLEEP`` -> ``ASLEEP`` on the
+    configured schedule but never actually calls ``rtcwake`` /
+    ``systemctl poweroff``. ``/stream/*`` returns ``503 SLEEPING``
+    during the ASLEEP window instead. Useful for rehearsing a sleep
+    cycle on a bench Pi without halting it.
+    """
 
     disable_act_led: bool = True
     # Seconds a camera with refcount=0 lingers before its picamera2
@@ -78,10 +89,63 @@ class PowerConfig(BaseModel):
     # ``start()`` can take 3-10 s — long enough to make viewer-side
     # cold starts feel broken. Keeping both pipelines warm continuously
     # eliminates that delay; the cost is ~1 W extra at idle (two IMX708
-    # sensors active at 1 fps). Phase 2's schedule layer is expected to
-    # flip this off outside the active window so the cost is only paid
-    # while the system is supposed to be serving frames anyway.
+    # sensors active at 1 fps). The Phase 2 power state machine
+    # automatically releases these refcounts outside the active window
+    # so the cost is only paid while the system is supposed to be
+    # serving frames anyway.
     keep_cameras_warm: bool = True
+    dry_run: bool = False
+
+
+class LocationConfig(BaseModel):
+    """Geographic location used by the astral schedule.
+
+    Only consulted when ``schedule.enabled = true``. Values are not
+    required otherwise — Phase 1 deployments that don't enable the
+    schedule can leave this block at its defaults.
+    """
+
+    latitude: float = Field(default=0.0, ge=-90.0, le=90.0)
+    longitude: float = Field(default=0.0, ge=-180.0, le=180.0)
+    # IANA timezone name (``America/New_York``, ``Europe/Berlin``, …).
+    # ``UTC`` is a safe fallback; the schedule will still compute
+    # correctly but operators will read the timestamps in UTC.
+    timezone: str = "UTC"
+
+
+class ScheduleConfig(BaseModel):
+    """Astral-based AWAKE/ASLEEP schedule.
+
+    Active window per civil day: ``[sunrise + sunrise_offset_minutes,
+    sunset + sunset_offset_minutes]``. Outside that range the power
+    state machine transitions to ``ENTERING_SLEEP`` at ``sunset -
+    warn_minutes_before_sleep`` (UX lead-time for viewers), then to
+    ``ASLEEP`` at sunset, where the Pi is powered off with an RTC
+    alarm set for ``next_sunrise - wake_lead_minutes``.
+
+    ``enabled = false`` (the default) keeps the service in the Phase 1
+    "always AWAKE" regime — neither this block nor ``[location]``
+    needs to be populated.
+    """
+
+    enabled: bool = False
+    sunrise_offset_minutes: int = 0
+    sunset_offset_minutes: int = 0
+    warn_minutes_before_sleep: int = Field(default=15, ge=0)
+    wake_lead_minutes: int = Field(default=5, ge=0)
+
+
+class NetworkConfig(BaseModel):
+    """LTE / uplink health probe.
+
+    A background task pings ``modem_probe_target`` every
+    ``modem_probe_interval_seconds`` and surfaces the last result on
+    ``/api/status``. No automatic remediation — diagnosis only.
+    """
+
+    modem_probe_target: str = "1.1.1.1"
+    modem_probe_interval_seconds: int = Field(default=60, ge=5)
+    modem_probe_timeout_seconds: int = Field(default=5, ge=1)
 
 
 class AppConfig(BaseModel):
@@ -90,6 +154,9 @@ class AppConfig(BaseModel):
     camera1: CameraConfig = Field(default_factory=CameraConfig)
     stream: StreamConfig = Field(default_factory=StreamConfig)
     power: PowerConfig = Field(default_factory=PowerConfig)
+    location: LocationConfig = Field(default_factory=LocationConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
 
     @classmethod
     def from_toml(cls, path: Path) -> AppConfig:
