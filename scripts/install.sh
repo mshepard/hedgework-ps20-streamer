@@ -231,7 +231,13 @@ setup_venv() {
     log "Upgrading pip"
     "${INSTALL_PREFIX}/.venv/bin/pip" install --upgrade pip
     log "Installing Streamer from ${REPO_ROOT}"
-    "${INSTALL_PREFIX}/.venv/bin/pip" install "${REPO_ROOT}"
+    # --no-warn-conflicts: the venv inherits --system-site-packages so
+    # it can see the apt-installed picamera2. That means pip's resolver
+    # also sees every package under /usr/lib/python3/dist-packages and
+    # whines about any pre-existing dependency conflict there (e.g.
+    # types-seaborn missing matplotlib). Those aren't ours to fix; mute
+    # the noise so genuine install failures stand out.
+    "${INSTALL_PREFIX}/.venv/bin/pip" install --no-warn-conflicts "${REPO_ROOT}"
     log "Setting ownership of ${INSTALL_PREFIX} to ${USER_NAME}"
     chown -R "${USER_NAME}:${USER_NAME}" "${INSTALL_PREFIX}"
 }

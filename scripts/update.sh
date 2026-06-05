@@ -101,7 +101,16 @@ pip_install() {
     # automatically on update. pip is smart enough to skip what's
     # already satisfied, so this only meaningfully slows the first
     # update after a new dep is added.
-    "${INSTALL_PREFIX}/.venv/bin/pip" install --upgrade --force-reinstall "${REPO_ROOT}"
+    #
+    # --no-warn-conflicts: the venv inherits --system-site-packages so it
+    # can see the apt-installed picamera2. That means pip's resolver also
+    # sees every unrelated package in /usr/lib/python3/dist-packages, and
+    # whines about any pre-existing dependency conflict there (e.g.
+    # types-seaborn missing matplotlib). Those aren't ours to fix; mute
+    # the noise so genuine install failures stand out.
+    "${INSTALL_PREFIX}/.venv/bin/pip" install \
+        --upgrade --force-reinstall --no-warn-conflicts \
+        "${REPO_ROOT}"
     chown -R "${USER_NAME}:${USER_NAME}" "${INSTALL_PREFIX}"
 }
 
