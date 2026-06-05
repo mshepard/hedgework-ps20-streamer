@@ -320,10 +320,10 @@ button:disabled {
   display: none;
 }
 
-.status-banner.asleep {
-  background: var(--brand-pink);
-  color: var(--brand-dark);
-}
+/* ENTERING_SLEEP and ASLEEP both use the default yellow background
+ * (above). The `.asleep` modifier is still toggled by cam.js so it
+ * remains available as a hook if we want to differentiate the two
+ * states visually later. */
 
 @media (max-width: 640px) {
   .status-banner {
