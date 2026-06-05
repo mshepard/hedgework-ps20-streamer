@@ -24,7 +24,16 @@ KillMode=mixed
 # effort, will warn if denied) and read access to /etc/streamer for
 # the config; the user otherwise has no write surface beyond what's
 # explicitly granted.
-NoNewPrivileges=true
+#
+# NoNewPrivileges intentionally left at the systemd default (false).
+# Phase 2's HARD_SLEEP path invokes `sudo /usr/sbin/rtcwake` and
+# `sudo /usr/bin/systemctl poweroff`, and sudo is a setuid-root
+# binary. Setting NoNewPrivileges=true here would set
+# PR_SET_NO_NEW_PRIVS on the cgroup and the kernel would refuse the
+# setuid transition, breaking the sleep cycle. The sudoers entry at
+# /etc/sudoers.d/streamer already restricts what the service user
+# can escalate to (exactly those two commands), so dropping this
+# specific hardening lever is the right trade.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
