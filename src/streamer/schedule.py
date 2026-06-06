@@ -9,12 +9,15 @@ release).
 
 The active window for each civil day is
 
-    [sunrise + sunrise_offset, sunset + sunset_offset]
+    [(sunrise + sunrise_offset) - wake_lead_minutes,
+      sunset  + sunset_offset]
 
 where sunrise/sunset are computed by the ``astral`` library for the
 configured ``[location]``. Offsets are signed minutes, e.g.
 ``sunrise_offset_minutes = -30`` wakes the camera half an hour before
-civil sunrise.
+civil sunrise. The wake-lead subtraction on the left edge is what
+keeps an RTC-woken Pi in AWAKE during the boot-and-warm interval
+that precedes sunrise.
 
 This module is deliberately easy to unit test: feed it a fake ``now``
 and the same ``location`` / ``schedule`` blocks the live service uses,
@@ -110,7 +113,15 @@ def decide(
         *_civil_day(location, tomorrow), schedule=schedule
     )
 
-    active = today_sr <= now < today_ss
+    # ``active`` includes the wake-lead approach window before sunrise.
+    # ``power.py`` arms the RTC alarm at ``sunrise - wake_lead`` so the
+    # Pi can cold-boot and warm cameras before viewers connect. Without
+    # folding that window into ``active``, a Pi that RTC-woke at
+    # ``sunrise - 5 min`` would compute ``active=False`` on its first
+    # tick and the state machine would push it straight back to ASLEEP,
+    # defeating the entire wake-lead design.
+    wake_lead = timedelta(minutes=schedule.wake_lead_minutes)
+    active = (today_sr - wake_lead) <= now < today_ss
 
     # Next sleep transition: today's sunset+offset if we haven't passed
     # it yet, otherwise tomorrow's.

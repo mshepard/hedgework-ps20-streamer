@@ -60,6 +60,15 @@ class Mode(str, Enum):
 # the user-facing latency for the toggle is effectively zero.
 POLL_INTERVAL_SECONDS = 30.0
 
+# Per-camera acquire timeout when re-entering AWAKE. A wedged
+# libcamera state (e.g. lingering CFE dequeue fault) can make
+# ``cam.acquire()`` hang indefinitely. We'd rather drop the warm-hold
+# for that one camera — the next viewer connect runs its own recovery
+# path via ``mark_broken()`` / ``_recover_blocking()`` — than wedge
+# the state machine and hold the asyncio.Lock, which would also block
+# the admin endpoint that's trying to rescue us.
+AWAKE_ACQUIRE_TIMEOUT_SECONDS = 15.0
+
 # Sudo-fronted commands for HARD_SLEEP. The installer's sudoers.d
 # entry grants the streamer user exactly these two invocations.
 RTCWAKE_CMD = ["sudo", "/usr/sbin/rtcwake"]
@@ -117,17 +126,25 @@ class PowerManager:
         return self._config.schedule.enabled
 
     def snapshot(self) -> dict[str, Any]:
-        """JSON-serialisable state for /api/status."""
+        """JSON-serialisable state for /api/status.
+
+        ``next_event`` is derived from ``self._mode`` rather than from
+        ``decision.active`` so the field is self-consistent with the
+        reported mode even if the state machine is mid-transition (or,
+        in pathological cases, wedged): AWAKE/ENTERING_SLEEP both look
+        forward to the upcoming sleep, ASLEEP looks forward to the
+        upcoming wake.
+        """
 
         d = self._last_decision
         next_event: dict[str, str] | None = None
         if d is not None and self.schedule_enabled:
-            if d.active:
+            if self._mode in (Mode.AWAKE, Mode.ENTERING_SLEEP):
                 next_event = {
                     "type": "sleep",
                     "at": d.next_sleep.isoformat(),
                 }
-            else:
+            elif self._mode == Mode.ASLEEP:
                 next_event = {
                     "type": "wake",
                     "at": d.next_wake.isoformat(),
@@ -312,7 +329,19 @@ class PowerManager:
             return
         for cam in self._cameras.all():
             try:
-                await cam.acquire()
+                await asyncio.wait_for(
+                    cam.acquire(),
+                    timeout=AWAKE_ACQUIRE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Re-acquire of camera %d timed out after %.0fs on "
+                    "AWAKE entry; leaving it unheld so the state "
+                    "machine doesn't wedge (viewer-initiated acquire "
+                    "will trigger normal recovery)",
+                    cam.camera_num,
+                    AWAKE_ACQUIRE_TIMEOUT_SECONDS,
+                )
             except Exception:
                 logger.exception(
                     "Re-acquire of camera %d failed on AWAKE entry",
