@@ -38,6 +38,15 @@ class ServerConfig(BaseModel):
     # Brand label shown on the per-camera viewer pages and in the browser
     # tab title. Empty falls back to "Streamer".
     site_name: str = "HEDGEWORK @ PS 20"
+    # When true, ``/stream/cam0``, ``/stream/cam1``, and a new
+    # ``/api/public/status`` endpoint are reachable anonymously (no
+    # token, with permissive CORS headers) so they can be embedded in
+    # a third-party webpage (e.g. a WordPress page hosted elsewhere).
+    # The token-protected ``/api/status``, ``/api/info``, and
+    # ``/api/admin/*`` endpoints stay locked regardless. This is a
+    # public-internet opt-in: only enable when the intent is for
+    # anyone-with-the-URL to watch the streams.
+    public_streams: bool = False
 
 
 class CameraConfig(BaseModel):

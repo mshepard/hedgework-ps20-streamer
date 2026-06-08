@@ -12,6 +12,7 @@ Endpoints:
   Unauthenticated:
     GET /                        -> landing page linking /cam0 and /cam1
     GET /cam0, /cam1             -> per-camera viewer HTML
+    GET /embed                   -> copy-pasteable cross-origin embed snippet
     GET /static/<file>           -> CSS / JS / images / favicon
     GET /health                  -> liveness probe
 
@@ -24,6 +25,24 @@ Endpoints:
     GET  /stream/cam0, /stream/cam1
                                  -> long-lived multipart/x-mixed-replace
                                     MJPEG; one capture loop per request
+
+  Conditionally public (when ``[server] public_streams = true``):
+    GET  /api/public/status      -> minimal CORS-friendly viewer state
+                                    (mode, next_event, site_name,
+                                    cameras, stream.framerate)
+    GET  /stream/cam0, /stream/cam1
+                                 -> same MJPEG endpoints, with CORS
+                                    headers and no token check, so an
+                                    `<img>` on a third-party page can
+                                    load them
+
+  Public-mode CORS surface: requests to ``/api/public/*`` and
+  ``/stream/*`` get ``Access-Control-Allow-Origin: *`` plus an
+  ``Access-Control-Expose-Headers: Warning`` so the embed JS can read
+  the ``Warning: 299 - "sleeping in N minutes"`` countdown on the
+  ENTERING_SLEEP MJPEG response. The CORS middleware is installed
+  unconditionally so OPTIONS preflights always work; the auth check
+  is what gates real access when ``public_streams = false``.
 
 Phase 2 wires power-mode awareness into ``/stream/*``:
 
@@ -89,12 +108,25 @@ FIRST_FRAME_TIMEOUT_SECONDS = 15.0
 CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
 CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
 
-# Paths that bypass auth entirely. The static UI bundle and the four
-# HTML entrypoints (landing, cam pages, health) must be reachable
-# anonymously so the browser can load them before it has a token.
-# Everything data-bearing falls through to the token check below.
-UNAUTH_EXACT = {"/", "/health", "/cam0", "/cam1"}
+# Paths that bypass auth entirely. The static UI bundle, the four
+# HTML entrypoints (landing, cam pages, embed snippet), and ``/health``
+# must be reachable anonymously so the browser can load them before
+# it has a token. Everything data-bearing falls through to the token
+# check below.
+UNAUTH_EXACT = {"/", "/health", "/cam0", "/cam1", "/embed"}
 UNAUTH_PREFIXES = ("/static/",)
+
+# Paths that may be served anonymously when ``[server] public_streams``
+# is true. The auth middleware skips the token check for these paths
+# in that case; otherwise they fall through to the normal token
+# requirement. CORS headers are added on the response for paths
+# matching these prefixes regardless of public_streams, so a 401
+# from public mode = false still surfaces correctly cross-origin.
+PUBLIC_PREFIXES = ("/api/public/", "/stream/")
+
+# CORS preflight cache lifetime. 24h means a long-lived embedded page
+# won't pay the OPTIONS round-trip more than once a day.
+CORS_PREFLIGHT_MAX_AGE = "86400"
 
 
 def _extract_token(request: web.Request) -> str | None:
@@ -107,13 +139,29 @@ def _extract_token(request: web.Request) -> str | None:
     return key or None
 
 
-def _make_auth_middleware(auth_token: str):
+def _is_public_path(path: str) -> bool:
+    return any(path.startswith(p) for p in PUBLIC_PREFIXES)
+
+
+def _make_auth_middleware(auth_token: str, public_streams: bool):
     @web.middleware
     async def auth_middleware(request: web.Request, handler):
         path = request.path
         if path in UNAUTH_EXACT or any(
             path.startswith(p) for p in UNAUTH_PREFIXES
         ):
+            return await handler(request)
+        # CORS preflight is always anonymous: the actual auth check
+        # happens on the follow-up real request. Without this, an
+        # OPTIONS to /stream/cam0 from a public WordPress page would
+        # 401 and the browser would refuse to send the real GET.
+        if request.method == "OPTIONS":
+            return await handler(request)
+        # ``public_streams`` opens /api/public/* and /stream/* to
+        # anonymous viewers so they can be embedded cross-origin.
+        # All other paths (admin, /api/status, /api/info) keep their
+        # bearer-token requirement.
+        if public_streams and _is_public_path(path):
             return await handler(request)
         provided = _extract_token(request)
         if provided is None:
@@ -123,6 +171,51 @@ def _make_auth_middleware(auth_token: str):
         return await handler(request)
 
     return auth_middleware
+
+
+@web.middleware
+async def _cors_middleware(request: web.Request, handler):
+    """Add CORS headers to public endpoints and answer preflights.
+
+    Installed unconditionally so OPTIONS preflights and cross-origin
+    responses work whenever the underlying endpoint allows them. When
+    ``public_streams = false``, /api/public/* and /stream/* still
+    return 401 on real requests — but with CORS headers attached so
+    the embed page's fetch error message accurately reflects "401" and
+    not the generic "CORS error" the browser would otherwise show.
+    """
+
+    path = request.path
+    # OPTIONS preflight: short-circuit with the headers the browser
+    # needs. Browsers send a preflight before any cross-origin
+    # request that uses non-simple methods/headers; for our minimal
+    # GET-with-?key= traffic we don't strictly need to permit
+    # Authorization, but allowing it lets a future caller use the
+    # Bearer header cross-origin too.
+    if request.method == "OPTIONS" and _is_public_path(path):
+        return web.Response(
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Max-Age": CORS_PREFLIGHT_MAX_AGE,
+            },
+        )
+
+    response = await handler(request)
+
+    if _is_public_path(path):
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+        # Expose the Warning header so the embed JS can read the
+        # "sleeping in N minutes" countdown the stream handler attaches
+        # during ENTERING_SLEEP. Default browser CORS hides everything
+        # except a short safelist.
+        response.headers.setdefault(
+            "Access-Control-Expose-Headers", "Warning"
+        )
+
+    return response
 
 
 class StreamerServer:
@@ -142,15 +235,28 @@ class StreamerServer:
         self._active_streams: set[asyncio.Task] = set()
 
     def build(self) -> web.Application:
+        # CORS first so OPTIONS preflights short-circuit before the
+        # auth check; auth second so token validation runs on every
+        # data-bearing request that survives the preflight.
         app = web.Application(
-            middlewares=[_make_auth_middleware(self.config.server.auth_token)]
+            middlewares=[
+                _cors_middleware,
+                _make_auth_middleware(
+                    self.config.server.auth_token,
+                    self.config.server.public_streams,
+                ),
+            ]
         )
 
         # Unauthenticated HTML / health.
         app.router.add_get("/", self._index)
         app.router.add_get("/cam0", self._camera_page)
         app.router.add_get("/cam1", self._camera_page)
+        app.router.add_get("/embed", self._embed_page)
         app.router.add_get("/health", self._health)
+
+        # Public (anonymous when public_streams=true; token-gated otherwise).
+        app.router.add_get("/api/public/status", self._public_status)
 
         # Token-gated JSON + MJPEG.
         app.router.add_get("/api/status", self._status)
@@ -187,6 +293,13 @@ class StreamerServer:
 
     async def _camera_page(self, request: web.Request) -> web.Response:
         return web.FileResponse(WEBUI_DIR / "cam.html")
+
+    async def _embed_page(self, request: web.Request) -> web.Response:
+        # The /embed page hosts the copy-pasteable third-party
+        # embed snippet. It's also a working demo of the snippet —
+        # view-source gives operators the exact HTML to paste into
+        # their CMS.
+        return web.FileResponse(WEBUI_DIR / "embed.html")
 
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "version": __version__})
@@ -271,6 +384,43 @@ class StreamerServer:
             }
         )
 
+    # ---------- Public (CORS-enabled, anonymous when public_streams=true) ----------
+
+    async def _public_status(self, request: web.Request) -> web.Response:
+        """Minimal status view safe to expose anonymously.
+
+        Includes only what an external embed needs to render its UI:
+        the schedule mode, the next sleep/wake event for the countdown
+        banner, the site brand, and the list of cameras + framerate.
+        Deliberately excludes anything operational (refcounts, modem
+        latency, dry_run, schedule_enabled internals beyond mode) so
+        a public embed page can't fingerprint the deployment beyond
+        what it would already see from the live MJPEG feed.
+        """
+
+        power_snap = self.power.snapshot() if self.power is not None else {
+            "mode": "AWAKE",
+            "next_event": None,
+        }
+        return web.json_response(
+            {
+                "mode": power_snap["mode"],
+                "next_event": power_snap["next_event"],
+                "site_name": self.config.server.site_name or "Streamer",
+                "stream": {
+                    "framerate": self.config.stream.framerate,
+                },
+                "cameras": [
+                    {
+                        "camera_num": cam.camera_num,
+                        "display_name": self._camera_display_name(cam.camera_num),
+                        "resolution": list(cam.resolution),
+                    }
+                    for cam in self.cameras.all()
+                ],
+            }
+        )
+
     def _camera_display_name(self, camera_num: int) -> str:
         cfg = getattr(self.config, f"camera{camera_num}", None)
         if cfg is not None and getattr(cfg, "name", ""):
@@ -307,12 +457,22 @@ class StreamerServer:
         # Response headers. During ENTERING_SLEEP we tack on a
         # ``Warning: 299`` so the viewer JS can show a sleep-soon
         # banner without polling another endpoint.
+        #
+        # CORS headers are set here rather than relying on the global
+        # ``_cors_middleware``: ``StreamResponse.prepare()`` flushes
+        # headers to the wire immediately, before any post-handler
+        # middleware can mutate them. Setting them in the dict that
+        # ``StreamResponse(..., headers=)`` receives means they're
+        # present in that first flush. Harmless when the request is
+        # same-origin (browser ignores the matching origin).
         headers = {
             "Content-Type": MJPEG_CONTENT_TYPE,
             "Cache-Control": "no-store, no-cache, must-revalidate, private",
             "Pragma": "no-cache",
             "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
             "Connection": "close",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Warning",
         }
         if self.power is not None and self.power.mode == Mode.ENTERING_SLEEP:
             mins = self.power.minutes_until_sleep()

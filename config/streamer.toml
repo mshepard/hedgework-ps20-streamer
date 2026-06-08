@@ -19,6 +19,14 @@ auth_token = "change-me"
 # tab title. Empty falls back to "Streamer". Matches the umbrella
 # project brand at https://ps20.hedgework.net/.
 site_name = "HEDGEWORK @ PS 20"
+# When true, the MJPEG streams and a minimal /api/public/status endpoint
+# become anonymously accessible (no auth_token required) and serve
+# permissive CORS headers, so they can be <img>-embedded in a webpage
+# hosted on another origin (e.g. a public WordPress page). Token-gated
+# endpoints (/api/status, /api/info, /api/admin/*) remain locked.
+# Default false; only enable when you want anyone-with-the-URL to
+# watch the cameras.
+public_streams = false
 
 [camera0]
 resolution = [1280, 720]

@@ -18,6 +18,13 @@ no WebRTC, no client-side polling state machine.
   per-camera state, active stream count, LTE modem reachability
 - `GET /api/info` — JSON: site name + per-camera display labels (used
   by the viewer pages for branding)
+- `GET /api/public/status` — minimal CORS-friendly viewer state for
+  cross-origin embeds (mode, next_event, site_name, cameras,
+  stream.framerate); anonymous when `[server] public_streams = true`,
+  token-gated otherwise
+- `GET /embed` — copy-pasteable HTML/JS snippet that renders both
+  camera tiles in an externally-hosted page (e.g. WordPress) with a
+  friendly sleep / offline fallback
 - `GET  /api/admin/sleep-enabled` — JSON: current sleep override state
 - `POST /api/admin/sleep-enabled` — `{"enabled": bool}` to suppress
   (or re-enable) the schedule, persisted to
@@ -25,9 +32,13 @@ no WebRTC, no client-side polling state machine.
 - `GET /health` — liveness probe (no auth)
 - Branded landing page at `/`
 
-Single bearer token gates `/api/*` and `/stream/*`. Token may be
-delivered as `Authorization: Bearer <token>` or as a `?key=<token>` URL
-query parameter (so plain `<img src=...>` works).
+Single bearer token gates `/api/*` and `/stream/*` by default. Token
+may be delivered as `Authorization: Bearer <token>` or as a
+`?key=<token>` URL query parameter (so plain `<img src=...>` works).
+With `[server] public_streams = true`, `/api/public/status` and the
+two `/stream/*` endpoints become anonymously accessible with
+permissive CORS headers so they can be `<img>`-embedded on a
+third-party origin.
 
 ## Architecture
 
@@ -96,6 +107,65 @@ machine stays in AWAKE regardless of the schedule. The value is
 persisted to `/var/lib/streamer/sleep_enabled.json` and reloaded
 across restarts and (real) wake cycles.
 
+## Cross-origin embed
+
+For the common deployment — Pi on solar/LTE, sleeping at night — the
+two `/cam0` and `/cam1` viewer pages have one inherent limitation:
+they're served from the Pi, so the URL itself goes offline when the
+Pi powers off at sunset. If the page lives somewhere else (WordPress,
+a static host, your own site) and only the *frames* come from the
+Pi, the URL stays reachable 24/7 and visitors see a friendly
+"Cameras asleep — back at 5:20 AM" card during the off hours.
+
+Setting `[server] public_streams = true` enables this:
+
+- `/api/public/status` and `/stream/cam{0,1}` become anonymously
+  reachable (no `auth_token` required) and serve
+  `Access-Control-Allow-Origin: *` so a page on another origin can
+  poll the status endpoint and embed the streams as plain
+  `<img src="...">` tags.
+- The token-protected `/api/status`, `/api/info`, and
+  `/api/admin/*` endpoints stay locked. Admins keep their bearer-
+  token surface; only the read-only viewer endpoints open up.
+- A copy-pasteable snippet is published at `/embed`. It renders a
+  live two-tile demo using the same code you'd paste into your
+  CMS, with sleep/offline fallbacks already wired in.
+
+To deploy:
+
+1. Set `public_streams = true` in `streamer.toml` and restart the
+   service.
+2. Ensure the Pi is reachable on a stable public URL (Tailscale
+   Funnel and Cloudflare Tunnel both work; the embed JS uses
+   absolute URLs against whatever you put in `data-pi-url`).
+3. Open `https://<your-pi-url>/embed` and view-source. Copy
+   everything between the `===== SNIPPET BEGIN` and
+   `===== SNIPPET END` comments.
+4. Paste into a WordPress Custom HTML block (or any plain
+   `<div>`-rooted container).
+5. Edit the mount `<div>`'s `data-pi-url` to your Pi's URL, e.g.
+   `data-pi-url="https://hedgebuggy.tailfoo.ts.net"`.
+
+The widget polls `/api/public/status` every 20 s (configurable via
+`data-poll-interval-ms` on the mount div) and switches between
+three states:
+
+- **AWAKE** — both tiles render live MJPEG via `<img src>`. Browser
+  handles the multipart parsing natively; no JS in the per-frame
+  path.
+- **ENTERING_SLEEP** — streams stay live; a yellow banner counts
+  down to the impending sleep transition.
+- **ASLEEP or Pi unreachable** — tiles replace their `<img>` with
+  a dimmed card showing the next scheduled wake. The hosted page
+  itself never becomes broken; only the live frame portion goes
+  dark, and only until the next sunrise.
+
+Security note: `public_streams = true` is a public-internet opt-in.
+Treat the Funnel/Tunnel URL itself as a shared secret if you don't
+want anyone-with-the-URL watching. There is no rate-limiting on the
+stream endpoints in this release — viewers who hold the URL can
+hold a connection indefinitely.
+
 ## Hardware
 
 - Raspberry Pi 5 with the `imx708,cam0` + `imx708,cam1` dtoverlays
@@ -152,6 +222,8 @@ host = "0.0.0.0"
 port = 8080
 auth_token = "..."           # auto-generated on first install
 site_name = "HEDGEWORK @ PS 20"
+public_streams = false       # opt-in to anonymous /stream/* + /api/public/status
+                             # for cross-origin embeds; see Cross-origin embed below
 
 [camera0]
 resolution = [1280, 720]
@@ -264,6 +336,12 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
      -d '{"enabled": true}' \
      http://localhost:8080/api/admin/sleep-enabled
 
+# Test the cross-origin embed surface (no token; expects 200 when
+# [server] public_streams = true, 401 otherwise).
+curl -s -i http://localhost:8080/api/public/status | head -10
+curl -s -i -X OPTIONS -H "Origin: https://ps20.hedgework.net" \
+     http://localhost:8080/api/public/status | head -10
+
 # Update after pulling code changes (also refreshes sudoers + state dir)
 sudo bash scripts/update.sh
 ```
@@ -293,6 +371,10 @@ Implemented in this release:
 - Sudoers entry installed at `/etc/sudoers.d/streamer` granting the
   service user exactly `/usr/sbin/rtcwake` and `/usr/bin/systemctl
   poweroff` (no other privileged commands).
+- Cross-origin embed (`[server] public_streams = true`): anonymous
+  `/api/public/status` + `/stream/*` with CORS headers, plus a
+  copy-pasteable snippet at `/embed` for hosting both camera tiles
+  on a third-party page.
 
 ## Phase 2.5 (planned)
 

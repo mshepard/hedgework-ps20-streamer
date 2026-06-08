@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HEDGEWORK @ PS 20 · Cameras</title>
+    <link rel="icon" type="image/png" href="/static/media/Hedge-icon.png" />
+    <!--
+      Streamer cross-origin embed snippet.
+
+      Copy from <div class="hedgework-cam-embed"> through the closing
+      </script> below into a third-party page (e.g. a WordPress Custom
+      HTML block). Set ``data-pi-url`` on the mount <div> to your Pi's
+      public URL (Tailscale Funnel, Cloudflare Tunnel, etc.). Leave it
+      blank when the snippet is served from the Pi itself — the JS
+      defaults to window.location.origin in that case.
+
+      Requires ``[server] public_streams = true`` in streamer.toml so
+      /api/public/status and /stream/* are anonymously reachable with
+      CORS. Without that flag the embed will surface a 401 in the
+      tile cards.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lexend+Tera:wght@400;500;700&display=swap"
+    />
+    <style>
+      /* Demo-page chrome only; not part of the embed snippet. */
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Inter", system-ui, sans-serif;
+        background: #fafbfc;
+        color: #15312b;
+        line-height: 1.55;
+      }
+      .embed-doc {
+        max-width: 980px;
+        margin: 0 auto;
+      }
+      .embed-doc h1 {
+        font-family: "Lexend Tera", "Inter", system-ui, sans-serif;
+        font-weight: 500;
+        font-size: 22px;
+        margin: 0 0 8px 0;
+      }
+      .embed-doc .lede {
+        color: rgba(21, 49, 43, 0.7);
+        margin: 0 0 24px 0;
+      }
+      .embed-doc h2 {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(21, 49, 43, 0.6);
+        margin: 32px 0 12px 0;
+      }
+      .embed-doc pre {
+        background: #15312b;
+        color: #f5f1e8;
+        padding: 16px 18px;
+        border-radius: 6px;
+        overflow-x: auto;
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .embed-doc .note {
+        background: #fff;
+        border-left: 3px solid #ff8c44;
+        padding: 12px 16px;
+        margin: 16px 0;
+        border-radius: 0 4px 4px 0;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="embed-doc">
+      <h1>Cross-origin embed</h1>
+      <p class="lede">
+        Paste the snippet below into any HTML page (WordPress Custom HTML
+        block, static site, plain HTML, etc.) to embed both camera tiles.
+        The page stays reachable when the Pi sleeps at night — visitors
+        see a friendly countdown to the next wake instead of broken
+        images.
+      </p>
+
+      <h2>Live preview</h2>
+      <p class="lede">
+        The widget below is identical to what gets rendered on your
+        hosted page. Reload after a config change to see it update.
+      </p>
+
+      <!-- ===== SNIPPET BEGIN =================================== -->
+      <!-- Copy from this <div> down through the closing </script>. -->
+      <!-- Set data-pi-url to your Pi's public URL when pasting into -->
+      <!-- a page hosted on a different origin. -->
+      <div
+        class="hedgework-cam-embed"
+        data-pi-url=""
+        data-poll-interval-ms="20000"
+      ></div>
+      <style>
+        /* All styles namespaced under .hedgework-cam-embed so they don't
+           leak into the host page's CSS. */
+        .hedgework-cam-embed {
+          --hcam-orange: #ff8c44;
+          --hcam-orange-hover: #ff7d2c;
+          --hcam-dark: #15312b;
+          --hcam-blue: #9eccde;
+          --hcam-yellow: #f4ef9a;
+          --hcam-cream: #fafbfc;
+          --hcam-pink: #f6ccd5;
+          --hcam-font: "Inter", "Inter Fallback", -apple-system,
+            BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          --hcam-brand-font: "Lexend Tera", var(--hcam-font);
+
+          font-family: var(--hcam-font);
+          color: var(--hcam-dark);
+          font-size: 15px;
+          line-height: 1.55;
+          background: transparent;
+          max-width: 1280px;
+          margin: 0 auto;
+        }
+        .hedgework-cam-embed * {
+          box-sizing: border-box;
+        }
+        .hedgework-cam-embed .hcam-header {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          flex-wrap: wrap;
+          padding: 0 4px 12px 4px;
+        }
+        .hedgework-cam-embed .hcam-brand {
+          font-family: var(--hcam-brand-font);
+          font-weight: 500;
+          font-size: 18px;
+          color: var(--hcam-dark);
+        }
+        .hedgework-cam-embed .hcam-sep {
+          opacity: 0.4;
+        }
+        .hedgework-cam-embed .hcam-subtitle {
+          font-weight: 600;
+          font-size: 11px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(21, 49, 43, 0.65);
+        }
+        .hedgework-cam-embed .hcam-banner {
+          padding: 8px 16px;
+          font-size: 13px;
+          font-weight: 500;
+          background: var(--hcam-yellow);
+          color: var(--hcam-dark);
+          border-radius: 4px;
+          margin-bottom: 12px;
+        }
+        .hedgework-cam-embed .hcam-banner.hidden {
+          display: none;
+        }
+        .hedgework-cam-embed .hcam-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+        @media (max-width: 720px) {
+          .hedgework-cam-embed .hcam-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .hedgework-cam-embed .hcam-tile {
+          display: flex;
+          flex-direction: column;
+          border-radius: 8px;
+          overflow: hidden;
+          background: #fff;
+          border: 1px solid rgba(21, 49, 43, 0.1);
+          box-shadow:
+            0 1px 2px rgba(21, 49, 43, 0.06),
+            0 8px 24px rgba(21, 49, 43, 0.06);
+        }
+        .hedgework-cam-embed .hcam-tile-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 14px;
+          background: var(--hcam-pink);
+          border-bottom: 1px solid rgba(21, 49, 43, 0.08);
+        }
+        .hedgework-cam-embed .hcam-tile-name {
+          font-weight: 600;
+          font-size: 13px;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: var(--hcam-dark);
+        }
+        .hedgework-cam-embed .hcam-live-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--hcam-orange);
+          margin-left: auto;
+          box-shadow: 0 0 0 0 rgba(255, 140, 68, 0.6);
+          animation: hcam-pulse 1.4s ease-out infinite;
+        }
+        .hedgework-cam-embed .hcam-live-dot.dim {
+          background: rgba(21, 49, 43, 0.25);
+          animation: none;
+        }
+        @keyframes hcam-pulse {
+          0%   { box-shadow: 0 0 0 0   rgba(255, 140, 68, 0.55); }
+          70%  { box-shadow: 0 0 0 8px rgba(255, 140, 68, 0); }
+          100% { box-shadow: 0 0 0 0   rgba(255, 140, 68, 0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .hedgework-cam-embed .hcam-live-dot { animation: none; }
+        }
+        .hedgework-cam-embed .hcam-stage {
+          position: relative;
+          background: #111;
+          aspect-ratio: 16 / 9;
+          width: 100%;
+          display: block;
+        }
+        .hedgework-cam-embed .hcam-stage img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+          display: block;
+          background: #111;
+        }
+        .hedgework-cam-embed .hcam-stage img.hidden {
+          display: none;
+        }
+        .hedgework-cam-embed .hcam-stage .hcam-stage-msg {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          gap: 8px;
+          padding: 16px;
+          background:
+            radial-gradient(
+              ellipse at center,
+              rgba(21, 49, 43, 0.85) 0%,
+              rgba(21, 49, 43, 0.95) 100%
+            );
+          color: #fff;
+          text-align: center;
+        }
+        .hedgework-cam-embed .hcam-stage .hcam-stage-msg.hidden {
+          display: none;
+        }
+        .hedgework-cam-embed .hcam-stage-msg .hcam-msg-title {
+          font-size: 16px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+        }
+        .hedgework-cam-embed .hcam-stage-msg .hcam-msg-sub {
+          font-size: 13px;
+          opacity: 0.85;
+          font-weight: 400;
+        }
+        .hedgework-cam-embed .hcam-foot {
+          margin-top: 12px;
+          font-size: 11px;
+          color: rgba(21, 49, 43, 0.5);
+          text-align: right;
+          padding: 0 4px;
+        }
+      </style>
+      <script>
+        (function () {
+          // One embed instance per .hedgework-cam-embed mount point.
+          // Multiple mounts on a single page are supported; each one
+          // gets its own poller and DOM subtree.
+          const mounts = document.querySelectorAll(".hedgework-cam-embed");
+          mounts.forEach(initOne);
+
+          function initOne(root) {
+            // Pi URL resolution:
+            //   * Explicit data-pi-url wins (paste-into-WordPress case).
+            //   * Otherwise default to the current origin so the snippet
+            //     "just works" when served from /embed on the Pi.
+            const dataUrl = (root.dataset.piUrl || "").trim();
+            const piUrl = dataUrl || window.location.origin;
+            const pollMs = parseInt(
+              root.dataset.pollIntervalMs || "20000",
+              10,
+            );
+
+            // Built once, then mutated by render() on each status poll.
+            const ui = buildScaffold(root);
+
+            const state = {
+              piUrl,
+              pollMs,
+              status: null,
+              error: null,
+              countdownTimer: null,
+            };
+
+            poll(state, ui);
+            setInterval(() => poll(state, ui), pollMs);
+            // Re-tick the countdown every 15s so the "in N minutes"
+            // string stays current between full status polls.
+            setInterval(() => render(state, ui), 15_000);
+          }
+
+          function buildScaffold(root) {
+            // Wipe any prior render so re-initialising (e.g. via SPA
+            // routing) doesn't double-render.
+            root.innerHTML = "";
+
+            const header = el("div", "hcam-header");
+            const brand = el("span", "hcam-brand");
+            brand.textContent = "Streamer";
+            const sep = el("span", "hcam-sep");
+            sep.textContent = "·";
+            const subtitle = el("span", "hcam-subtitle");
+            subtitle.textContent = "Live Cameras";
+            header.appendChild(brand);
+            header.appendChild(sep);
+            header.appendChild(subtitle);
+
+            const banner = el("div", "hcam-banner hidden");
+
+            const grid = el("div", "hcam-grid");
+
+            const foot = el("div", "hcam-foot");
+            foot.textContent = "";
+
+            root.appendChild(header);
+            root.appendChild(banner);
+            root.appendChild(grid);
+            root.appendChild(foot);
+
+            return { root, header, brand, subtitle, banner, grid, foot, tiles: new Map() };
+          }
+
+          function ensureTile(ui, cam) {
+            if (ui.tiles.has(cam.camera_num)) return ui.tiles.get(cam.camera_num);
+
+            const tile = el("div", "hcam-tile");
+            const head = el("div", "hcam-tile-header");
+            const name = el("span", "hcam-tile-name");
+            name.textContent = cam.display_name || `Camera ${cam.camera_num}`;
+            const dot = el("span", "hcam-live-dot dim");
+            head.appendChild(name);
+            head.appendChild(dot);
+            const stage = el("div", "hcam-stage");
+            const img = document.createElement("img");
+            img.alt = `${cam.display_name || "Camera"} stream`;
+            img.decoding = "async";
+            img.referrerPolicy = "no-referrer";
+            img.className = "hidden";
+            const msg = el("div", "hcam-stage-msg");
+            const msgTitle = el("div", "hcam-msg-title");
+            const msgSub = el("div", "hcam-msg-sub");
+            msg.appendChild(msgTitle);
+            msg.appendChild(msgSub);
+            stage.appendChild(img);
+            stage.appendChild(msg);
+            tile.appendChild(head);
+            tile.appendChild(stage);
+            ui.grid.appendChild(tile);
+
+            const entry = { tile, name, dot, stage, img, msg, msgTitle, msgSub };
+            ui.tiles.set(cam.camera_num, entry);
+
+            // If the multipart MJPEG connection drops (Pi rebooted,
+            // went to sleep, LTE flapped), the browser fires onerror.
+            // Snap the tile to the "offline" card immediately instead
+            // of waiting up to 20 s for the next status poll.
+            img.addEventListener("error", () => applyOffline(entry));
+
+            return entry;
+          }
+
+          async function poll(state, ui) {
+            // Drop the fetch after 8 s. Default ``fetch()`` has no
+            // timeout, so a hung Pi would otherwise leave us forever
+            // in the "first poll never returned" state on page load.
+            const abort = "AbortSignal" in window && AbortSignal.timeout
+              ? AbortSignal.timeout(8000)
+              : undefined;
+            try {
+              const resp = await fetch(
+                `${state.piUrl}/api/public/status`,
+                { cache: "no-store", signal: abort },
+              );
+              if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}`);
+              }
+              state.status = await resp.json();
+              state.error = null;
+            } catch (e) {
+              // Unreachable Pi: keep the last-good cameras list (if any)
+              // and render the "offline" message in each tile rather
+              // than wiping the layout entirely. That way a brief
+              // network blip doesn't make the page flicker.
+              state.error = e.message || "unreachable";
+            }
+            render(state, ui);
+          }
+
+          function render(state, ui) {
+            // Header / site name.
+            const siteName = (state.status && state.status.site_name) || "Streamer";
+            ui.brand.textContent = siteName;
+
+            // Top banner — shown only during ENTERING_SLEEP.
+            const mode = state.status && state.status.mode;
+            const next = state.status && state.status.next_event;
+            if (mode === "ENTERING_SLEEP" && next && next.at) {
+              const mins = minutesUntil(next.at);
+              ui.banner.textContent =
+                `Cameras going to sleep in ${mins} minute${mins === 1 ? "" : "s"} ` +
+                `(at ${formatTime(next.at)})`;
+              ui.banner.classList.remove("hidden");
+            } else {
+              ui.banner.classList.add("hidden");
+            }
+
+            // Cameras: build / update one tile per server-reported
+            // camera. If the server is unreachable AND we've never
+            // seen a status, fall back to a generic two-tile message.
+            const cams =
+              (state.status && state.status.cameras) ||
+              (state.error
+                ? [
+                    { camera_num: 0, display_name: "Camera 0" },
+                    { camera_num: 1, display_name: "Camera 1" },
+                  ]
+                : []);
+
+            cams.forEach((cam) => {
+              const t = ensureTile(ui, cam);
+              t.name.textContent = cam.display_name || `Camera ${cam.camera_num}`;
+
+              if (state.error) {
+                applyOffline(t);
+                return;
+              }
+              if (mode === "ASLEEP") {
+                applyAsleep(t, next);
+                return;
+              }
+              // AWAKE or ENTERING_SLEEP — stream the live feed.
+              applyLive(t, state.piUrl, cam.camera_num);
+            });
+
+            // Foot: data freshness / source attribution.
+            if (state.error) {
+              ui.foot.textContent =
+                "Live feed currently unreachable. Will retry automatically.";
+            } else {
+              ui.foot.textContent = "";
+            }
+          }
+
+          function applyLive(t, piUrl, camNum) {
+            t.dot.classList.remove("dim");
+            t.msg.classList.add("hidden");
+            // Only (re-)set src if it would actually change, otherwise
+            // the browser may tear down a healthy multipart connection
+            // and the tile flashes every poll.
+            const want = `${piUrl}/stream/cam${camNum}`;
+            if (t.img.dataset.streamUrl !== want) {
+              t.img.dataset.streamUrl = want;
+              // Cache-buster prevents Chrome from reusing a stale
+              // closed connection on a tile that briefly went offline
+              // and came back.
+              t.img.src = `${want}?t=${Date.now()}`;
+            }
+            t.img.classList.remove("hidden");
+          }
+
+          function applyAsleep(t, next) {
+            t.dot.classList.add("dim");
+            t.img.classList.add("hidden");
+            t.img.removeAttribute("src");
+            delete t.img.dataset.streamUrl;
+            t.msgTitle.textContent = "Cameras are asleep";
+            t.msgSub.textContent =
+              next && next.at
+                ? `Next wake: ${formatDateTime(next.at)}`
+                : "Will return at the next scheduled wake.";
+            t.msg.classList.remove("hidden");
+          }
+
+          function applyOffline(t) {
+            t.dot.classList.add("dim");
+            t.img.classList.add("hidden");
+            t.img.removeAttribute("src");
+            delete t.img.dataset.streamUrl;
+            t.msgTitle.textContent = "Live feed unavailable";
+            t.msgSub.textContent =
+              "Trying to reconnect to the camera service…";
+            t.msg.classList.remove("hidden");
+          }
+
+          // ---------- helpers ----------
+
+          function el(tag, cls) {
+            const e = document.createElement(tag);
+            if (cls) e.className = cls;
+            return e;
+          }
+
+          function minutesUntil(iso) {
+            const target = new Date(iso).getTime();
+            const now = Date.now();
+            return Math.max(0, Math.round((target - now) / 60000));
+          }
+
+          function formatTime(iso) {
+            return new Date(iso).toLocaleTimeString([], {
+              hour: "numeric",
+              minute: "2-digit",
+            });
+          }
+
+          function formatDateTime(iso) {
+            const d = new Date(iso);
+            const now = new Date();
+            // Same calendar day → just time. Otherwise include weekday.
+            if (
+              d.getFullYear() === now.getFullYear() &&
+              d.getMonth() === now.getMonth() &&
+              d.getDate() === now.getDate()
+            ) {
+              return formatTime(iso);
+            }
+            return d.toLocaleString([], {
+              weekday: "short",
+              hour: "numeric",
+              minute: "2-digit",
+            });
+          }
+        })();
+      </script>
+      <!-- ===== SNIPPET END ===================================== -->
+
+      <div class="note">
+        <strong>Note:</strong> the embed page above is rendered using
+        the same snippet you'd paste into your CMS. The only difference
+        is that <code>data-pi-url=""</code> is left empty here, which
+        makes the JS default to the current origin (the Pi). When
+        pasting elsewhere, set <code>data-pi-url</code> to your Pi's
+        Tailscale Funnel or Cloudflare Tunnel URL.
+      </div>
+
+      <h2>How to use</h2>
+      <ol>
+        <li>
+          In <code>streamer.toml</code>, set
+          <code>[server] public_streams = true</code> and restart the
+          service.
+        </li>
+        <li>
+          Confirm the Pi is reachable on a public URL (Tailscale Funnel
+          works out of the box for personal use).
+        </li>
+        <li>
+          View source on this page and copy everything between the
+          <code>===== SNIPPET BEGIN</code> and
+          <code>===== SNIPPET END</code> markers.
+        </li>
+        <li>
+          Paste into a WordPress Custom HTML block (or any plain
+          HTML container).
+        </li>
+        <li>
+          Edit <code>data-pi-url=""</code> on the mount
+          <code>&lt;div&gt;</code> to point at your Pi's public URL,
+          e.g.
+          <code>data-pi-url="https://hedgebuggy.tailfoo.ts.net"</code>.
+        </li>
+      </ol>
+
+      <h2>What it does</h2>
+      <ul>
+        <li>
+          Polls <code>/api/public/status</code> every 20 s (configurable
+          via <code>data-poll-interval-ms</code>) to detect sleep state.
+        </li>
+        <li>
+          During <code>AWAKE</code>: renders both camera tiles with
+          live MJPEG streams.
+        </li>
+        <li>
+          During <code>ENTERING_SLEEP</code>: keeps streams live and
+          shows a yellow banner counting down to sleep.
+        </li>
+        <li>
+          During <code>ASLEEP</code> (or whenever the Pi is offline):
+          replaces tile contents with a dimmed card showing the next
+          wake time. The hosted page itself stays reachable.
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>
