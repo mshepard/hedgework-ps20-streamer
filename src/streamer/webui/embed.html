@@ -283,7 +283,15 @@
             //   * Explicit data-pi-url wins (paste-into-WordPress case).
             //   * Otherwise default to the current origin so the snippet
             //     "just works" when served from /embed on the Pi.
-            const dataUrl = (root.dataset.piUrl || "").trim();
+            //
+            // Trailing slashes are stripped because every path we
+            // build below already starts with "/"; a trailing slash
+            // turns ``/api/public/status`` into ``//api/public/status``
+            // which most CDNs / reverse proxies happily 404. Easy paste
+            // mistake to make in a WordPress block, so we just absorb it.
+            const dataUrl = (root.dataset.piUrl || "")
+              .trim()
+              .replace(/\/+$/, "");
             const piUrl = dataUrl || window.location.origin;
             const pollMs = parseInt(
               root.dataset.pollIntervalMs || "20000",
