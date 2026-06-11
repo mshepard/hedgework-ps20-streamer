@@ -408,6 +408,11 @@
               }
               state.status = await resp.json();
               state.error = null;
+              // Remember the upcoming sleep/wake window. The Pi
+              // physically powers off overnight, so this cache is the
+              // only way to tell late-night visitors "asleep until
+              // ~5:20 AM" rather than a generic offline message.
+              saveScheduleCache(state.status.schedule);
             } catch (e) {
               // Unreachable Pi: keep the last-good cameras list (if any)
               // and render the "offline" message in each tile rather
@@ -444,12 +449,22 @@
                   ]
                 : []);
 
+            // When the Pi is unreachable, check the cached schedule:
+            // if the clock says we're inside the expected off-window,
+            // the Pi is almost certainly just powered down for the
+            // night — show the friendly asleep card, not "offline".
+            const inferredWake = state.error ? inferAsleepWake() : null;
+
             cams.forEach((cam) => {
               const t = ensureTile(ui, cam);
               t.name.textContent = cam.display_name || `Camera ${cam.camera_num}`;
 
               if (state.error) {
-                applyOffline(t);
+                if (inferredWake) {
+                  applyAsleep(t, { at: inferredWake });
+                } else {
+                  applyOffline(t);
+                }
                 return;
               }
               if (mode === "ASLEEP") {
@@ -461,7 +476,7 @@
             });
 
             // Foot: data freshness / source attribution.
-            if (state.error) {
+            if (state.error && !inferredWake) {
               ui.foot.textContent =
                 "Live feed currently unreachable. Will retry automatically.";
             } else {
@@ -521,6 +536,80 @@
             t.msgSub.textContent =
               "Trying to reconnect to the camera service…";
             t.msg.classList.remove("hidden");
+          }
+
+          // ---------- schedule cache (offline sleep inference) ----------
+
+          const SCHEDULE_CACHE_KEY = "hcamScheduleV1";
+          // Don't extrapolate a cached window more than a week out:
+          // sunrise/sunset drift a minute or two per day, and a stale
+          // cache eventually starts lying about the wake time.
+          const SCHEDULE_CACHE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+          function saveScheduleCache(schedule) {
+            if (!schedule || !schedule.sleep_at || !schedule.wake_at) return;
+            // localStorage can throw (private browsing, storage
+            // partitioning, quota) — the cache is best-effort only.
+            try {
+              localStorage.setItem(
+                SCHEDULE_CACHE_KEY,
+                JSON.stringify({
+                  sleep_at: schedule.sleep_at,
+                  wake_at: schedule.wake_at,
+                  saved_at: Date.now(),
+                }),
+              );
+            } catch (e) {
+              /* best effort */
+            }
+          }
+
+          function inferAsleepWake() {
+            // Returns an ISO-ish wake time when the current moment
+            // falls inside the cached (possibly day-shifted) sleep
+            // window, else null.
+            let cached;
+            try {
+              cached = JSON.parse(localStorage.getItem(SCHEDULE_CACHE_KEY));
+            } catch (e) {
+              return null;
+            }
+            if (!cached || !cached.sleep_at || !cached.wake_at) return null;
+            if (
+              !cached.saved_at ||
+              Date.now() - cached.saved_at > SCHEDULE_CACHE_MAX_AGE_MS
+            ) {
+              return null;
+            }
+
+            let sleep = new Date(cached.sleep_at).getTime();
+            let wake = new Date(cached.wake_at).getTime();
+            const DAY_MS = 24 * 3600 * 1000;
+            // Sanity: a sleep window must be positive and shorter
+            // than a day (it's one night).
+            if (
+              !isFinite(sleep) ||
+              !isFinite(wake) ||
+              wake <= sleep ||
+              wake - sleep >= DAY_MS
+            ) {
+              return null;
+            }
+            // The cache holds one specific night's window. For a
+            // visitor returning on a later night, shift the window
+            // forward in whole days — sun times only drift ~1-2 min
+            // per day, well within "back around HH:MM" accuracy.
+            // (Bounded: the max-age check above caps the shift at a
+            // week's worth of days.)
+            const now = Date.now();
+            while (wake < now) {
+              sleep += DAY_MS;
+              wake += DAY_MS;
+            }
+            if (now >= sleep && now < wake) {
+              return new Date(wake).toISOString();
+            }
+            return null;
           }
 
           // ---------- helpers ----------
@@ -620,6 +709,14 @@
           During <code>ASLEEP</code> (or whenever the Pi is offline):
           replaces tile contents with a dimmed card showing the next
           wake time. The hosted page itself stays reachable.
+        </li>
+        <li>
+          Overnight (Pi fully powered off, status endpoint
+          unreachable): uses a cached copy of the sleep/wake schedule
+          (saved in <code>localStorage</code> on every successful
+          status poll) to show "asleep until ~HH:MM" instead of a
+          generic offline message. Visitors whose browser has never
+          reached the Pi see the offline card instead.
         </li>
       </ul>
     </div>

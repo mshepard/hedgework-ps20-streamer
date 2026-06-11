@@ -43,7 +43,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import numpy as np
 
@@ -90,6 +90,17 @@ class Camera:
         # Replaced wholesale by ``mark_broken()`` so the next recovery
         # has a free thread even though the previous one is stuck.
         self._picam2_executor: ThreadPoolExecutor = self._make_executor()
+        # Consecutive ``mark_broken()`` calls without an intervening
+        # successful capture. Feeds the PowerManager's self power-cycle
+        # trigger: a count that keeps climbing means the in-process
+        # recovery path (rebuild picamera2 instance) isn't enough and
+        # the camera link itself is wedged. Reset by the worker thread
+        # on every good frame — plain int assignment, GIL-atomic.
+        self.consecutive_failures: int = 0
+        # Fired (as a task on the running loop) from ``mark_broken()``
+        # with (camera_num, consecutive_failures). Set via
+        # ``CameraManager.attach_failure_callback``.
+        self._failure_cb: Callable[[int, int], Awaitable[None]] | None = None
 
     @property
     def running(self) -> bool:
@@ -119,9 +130,26 @@ class Camera:
         """
 
         self._broken = True
+        self.consecutive_failures += 1
         old_exec = self._picam2_executor
         self._picam2_executor = self._make_executor()
         old_exec.shutdown(wait=False, cancel_futures=True)
+
+        if self._failure_cb is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No loop on this thread (shouldn't happen in practice;
+                # mark_broken is called from async handlers). Skip the
+                # notification rather than crash the recovery path.
+                pass
+            else:
+                loop.create_task(
+                    self._failure_cb(
+                        self.camera_num, self.consecutive_failures
+                    ),
+                    name=f"cam{self.camera_num}-failure-cb",
+                )
 
     async def acquire(self) -> None:
         async with self._refcount_lock:
@@ -274,7 +302,10 @@ class Camera:
             # libcamera versions / multi-camera setups, hand back a view
             # into a shared buffer pool. Copying decouples the two
             # cameras' frame streams.
-            return picam2.capture_array("main").copy()
+            frame = picam2.capture_array("main").copy()
+        # A delivered frame proves the pipeline is healthy again.
+        self.consecutive_failures = 0
+        return frame
 
     @asynccontextmanager
     async def session(self):
@@ -293,6 +324,19 @@ class CameraManager:
 
     def get(self, camera_num: int) -> Camera:
         return self._cameras[camera_num]
+
+    def attach_failure_callback(
+        self, cb: Callable[[int, int], Awaitable[None]]
+    ) -> None:
+        """Install the persistent-failure notifier on every camera.
+
+        ``cb(camera_num, consecutive_failures)`` is scheduled as a task
+        each time a camera is marked broken. The PowerManager uses it
+        to decide whether a self power-cycle is warranted.
+        """
+
+        for cam in self._cameras.values():
+            cam._failure_cb = cb
 
     def all(self) -> list[Camera]:
         return list(self._cameras.values())

@@ -237,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cameras = build_manager(config)
     power_manager = PowerManager(config, cameras, state_dir=state_dir)
+    # Persistent camera failures (wedged SerDes link) escalate to the
+    # PowerManager, which may self power-cycle the Pi as a last resort.
+    cameras.attach_failure_callback(power_manager.handle_camera_failure)
     modem_probe = ModemProbe(config.network)
     server = StreamerServer(
         config, cameras, power=power_manager, modem=modem_probe
@@ -249,6 +252,15 @@ def main(argv: list[str] | None = None) -> int:
         config.power.dry_run,
         config.power.keep_cameras_warm,
     )
+    if config.power.recovery_power_cycle:
+        log.info(
+            "Recovery power-cycle: threshold=%d max/day=%d "
+            "boot_grace=%dmin wake_delay=%ds",
+            config.power.recovery_failure_threshold,
+            config.power.recovery_max_cycles_per_day,
+            config.power.recovery_boot_grace_minutes,
+            config.power.recovery_wake_delay_seconds,
+        )
     if config.schedule.enabled:
         log.info(
             "Schedule: lat=%.5f lon=%.5f tz=%s "

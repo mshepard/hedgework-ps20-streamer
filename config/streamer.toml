@@ -66,7 +66,33 @@ keep_cameras_warm = true
 # does NOT actually call rtcwake / systemctl poweroff. Instead,
 # /stream/* returns 503 SLEEPING during the ASLEEP window. Useful
 # for rehearsing a sleep cycle on a bench Pi without halting it.
+# Also applies to the recovery power-cycle below (decision is logged
+# but the Pi stays up).
 dry_run = false
+# ---- Self power-cycle recovery ----
+# Last-resort rescue for a camera whose SerDes link wedges in a way
+# that survives service restarts and warm reboots (only a real power
+# cut re-trains it; with POWER_OFF_ON_HALT=1, rtcwake + poweroff IS
+# a power cut). When a camera fails this many consecutive in-stream
+# recovery attempts (~16 s apart, so 5 ≈ 80 s of confirmed wedge),
+# the service arms the RTC and powers off; the Pi is back streaming
+# ~2-3 minutes later with freshly re-trained camera links.
+# NOTE: held at false pending field validation that a poweroff cycle
+# actually cures a wedged link (proven for physical unplug; the
+# rtcwake path is electrically equivalent but not yet demonstrated
+# against a live wedge). Test manually first — see README.
+recovery_power_cycle = false
+recovery_failure_threshold = 5
+# Hard cap on self-cycles per calendar day. Once exhausted the
+# service stays up and keeps serving whichever cameras still work.
+recovery_max_cycles_per_day = 3
+# No self-cycle within this many minutes of service start: a camera
+# that is dead (not just wedged) must not boot-loop the Pi and drain
+# the battery.
+recovery_boot_grace_minutes = 10
+# How far in the future to arm the RTC alarm before powering off.
+# Must comfortably exceed the shutdown duration.
+recovery_wake_delay_seconds = 120
 
 [location]
 # Required when [schedule].enabled = true. The astral library uses

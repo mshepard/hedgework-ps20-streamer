@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import suppress
 from datetime import timedelta
 from enum import Enum
@@ -95,6 +96,19 @@ class PowerManager:
         self._cameras = cameras
         self._state_path = state_dir / "sleep_enabled.json"
         self._sleep_enabled = self._load_sleep_enabled()
+        # ---- self power-cycle recovery state ----
+        # Persisted daily counter so the max-cycles-per-day cap
+        # survives the power cycles it is counting.
+        self._recovery_state_path = state_dir / "recovery_cycles.json"
+        self._recovery_state = self._load_recovery_state()
+        # Process-start reference for the boot grace window.
+        self._started_monotonic = time.monotonic()
+        # True once a recovery cycle has been committed; suppresses
+        # further triggers while the poweroff is in flight.
+        self._recovery_in_flight = False
+        # One-shot log flags so a wedged camera retriggering every
+        # ~16 s doesn't flood the journal with identical refusals.
+        self._recovery_refusals_logged: set[str] = set()
         self._mode = Mode.AWAKE
         self._last_decision: ScheduleDecision | None = None
         self._task: asyncio.Task[None] | None = None
@@ -155,6 +169,30 @@ class PowerManager:
             "dry_run": self.dry_run,
             "schedule_enabled": self.schedule_enabled,
             "next_event": next_event,
+            "recovery": {
+                "enabled": self._config.power.recovery_power_cycle,
+                "cycles_today": self._recovery_cycles_today(),
+                "max_per_day": self._config.power.recovery_max_cycles_per_day,
+            },
+        }
+
+    def schedule_window(self) -> dict[str, str] | None:
+        """Upcoming sleep/wake pair for the public embed.
+
+        Unlike ``next_event`` (which only looks forward to the single
+        next transition), this exposes both bounds of the upcoming
+        off-window. The embed caches it client-side so that when the
+        Pi is powered off overnight — and therefore unreachable — the
+        page can still tell visitors "asleep until ~HH:MM" instead of
+        a generic offline message.
+        """
+
+        d = self._last_decision
+        if d is None or not self.schedule_enabled:
+            return None
+        return {
+            "sleep_at": d.next_sleep.isoformat(),
+            "wake_at": d.next_wake.isoformat(),
         }
 
     def minutes_until_sleep(self) -> int | None:
@@ -243,6 +281,145 @@ class PowerManager:
                 "Failed to persist sleep_enabled override to %s",
                 self._state_path,
             )
+
+    # ---------- self power-cycle recovery ----------
+
+    def _load_recovery_state(self) -> dict[str, Any]:
+        try:
+            with self._recovery_state_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+        except FileNotFoundError:
+            pass
+        except (json.JSONDecodeError, OSError):
+            logger.exception(
+                "Recovery-cycle state file %s is unreadable; starting fresh",
+                self._recovery_state_path,
+            )
+        return {"date": "", "count": 0}
+
+    def _persist_recovery_state(self) -> None:
+        tmp = self._recovery_state_path.with_suffix(".json.tmp")
+        try:
+            self._recovery_state_path.parent.mkdir(parents=True, exist_ok=True)
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(self._recovery_state, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self._recovery_state_path)
+        except OSError:
+            logger.exception(
+                "Failed to persist recovery-cycle state to %s",
+                self._recovery_state_path,
+            )
+
+    def _recovery_cycles_today(self) -> int:
+        today = now_in_location_tz(self._config.location).date().isoformat()
+        if self._recovery_state.get("date") != today:
+            return 0
+        return int(self._recovery_state.get("count", 0))
+
+    def _log_recovery_refusal_once(self, key: str, msg: str, *args: Any) -> None:
+        if key in self._recovery_refusals_logged:
+            return
+        self._recovery_refusals_logged.add(key)
+        logger.warning(msg, *args)
+
+    async def handle_camera_failure(
+        self, camera_num: int, consecutive: int
+    ) -> None:
+        """Camera persistent-failure notification (from ``mark_broken``).
+
+        Decides whether the wedge warrants a self power-cycle: the
+        in-process recovery path (rebuild the picamera2 instance) has
+        failed ``consecutive`` times in a row, and field experience
+        shows a wedged SerDes link only recovers on a genuine power
+        cut. All guardrails live here; ``cameras.py`` just counts.
+        """
+
+        cfg = self._config.power
+        if not cfg.recovery_power_cycle:
+            return
+        if consecutive < cfg.recovery_failure_threshold:
+            return
+        if self._recovery_in_flight:
+            return
+        if self._mode != Mode.AWAKE:
+            # ENTERING_SLEEP/ASLEEP: the sunset path owns power; a
+            # wedged camera will get its power cut at sunset anyway.
+            self._log_recovery_refusal_once(
+                f"mode-{camera_num}",
+                "Camera %d wedged (%d consecutive failures) but mode is "
+                "%s; skipping self power-cycle",
+                camera_num,
+                consecutive,
+                self._mode.value,
+            )
+            return
+        uptime_minutes = (time.monotonic() - self._started_monotonic) / 60.0
+        if uptime_minutes < cfg.recovery_boot_grace_minutes:
+            self._log_recovery_refusal_once(
+                f"grace-{camera_num}",
+                "Camera %d wedged (%d consecutive failures) within the "
+                "boot grace window (%.1f of %d min); not power-cycling — "
+                "a camera that fails this early may be dead rather than "
+                "wedged, and a power-cycle loop would drain the battery",
+                camera_num,
+                consecutive,
+                uptime_minutes,
+                cfg.recovery_boot_grace_minutes,
+            )
+            return
+        cycles_today = self._recovery_cycles_today()
+        if cycles_today >= cfg.recovery_max_cycles_per_day:
+            self._log_recovery_refusal_once(
+                "daily-cap",
+                "Camera %d wedged (%d consecutive failures) but the "
+                "daily self power-cycle cap (%d) is exhausted; staying "
+                "up to serve the remaining camera(s)",
+                camera_num,
+                consecutive,
+                cfg.recovery_max_cycles_per_day,
+            )
+            return
+
+        self._recovery_in_flight = True
+        logger.warning(
+            "Camera %d wedged for %d consecutive recovery attempts; "
+            "initiating self power-cycle %d/%d for today (RTC wake in "
+            "%d s)",
+            camera_num,
+            consecutive,
+            cycles_today + 1,
+            cfg.recovery_max_cycles_per_day,
+            cfg.recovery_wake_delay_seconds,
+        )
+
+        # Commit the counter BEFORE the poweroff — after it, this
+        # process no longer exists to do the bookkeeping.
+        today = now_in_location_tz(self._config.location).date().isoformat()
+        self._recovery_state = {"date": today, "count": cycles_today + 1}
+        self._persist_recovery_state()
+
+        if self.dry_run:
+            logger.info(
+                "dry_run: self power-cycle decision logged; "
+                "rtcwake/poweroff skipped"
+            )
+            self._recovery_in_flight = False
+            return
+
+        wake_ts = int(time.time()) + cfg.recovery_wake_delay_seconds
+        ok = await self._run_rtcwake(wake_ts)
+        if not ok:
+            logger.error(
+                "rtcwake failed; aborting recovery poweroff to avoid an "
+                "unwakeable Pi"
+            )
+            self._recovery_in_flight = False
+            return
+        await self._run_poweroff()
 
     # ---------- main loop + transitions ----------
 

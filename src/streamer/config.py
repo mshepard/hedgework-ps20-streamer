@@ -104,6 +104,26 @@ class PowerConfig(BaseModel):
     # serving frames anyway.
     keep_cameras_warm: bool = True
     dry_run: bool = False
+    # ---- Self power-cycle recovery (last-resort camera rescue) ----
+    # Field experience: a marginal camera link (THSER102A SerDes) can
+    # wedge in a way that survives service restarts and even warm
+    # reboots — only a genuine power cut re-trains it. With
+    # POWER_OFF_ON_HALT=1 in the EEPROM, ``rtcwake + poweroff`` IS a
+    # power cut, so the service can rescue itself: after a camera
+    # fails ``recovery_failure_threshold`` consecutive in-stream
+    # recovery attempts, arm the RTC for ``recovery_wake_delay_seconds``
+    # in the future and power off. Total outage ≈ 2-3 minutes.
+    # Guardrails: at most ``recovery_max_cycles_per_day`` self-cycles
+    # per calendar day; never within ``recovery_boot_grace_minutes``
+    # of service start (prevents a dead camera boot-looping the Pi);
+    # never while ENTERING_SLEEP/ASLEEP (the sunset path owns power
+    # there). ``power.dry_run = true`` logs the decision but skips
+    # the actual power-off.
+    recovery_power_cycle: bool = False
+    recovery_failure_threshold: int = Field(default=5, ge=2)
+    recovery_max_cycles_per_day: int = Field(default=3, ge=1)
+    recovery_boot_grace_minutes: int = Field(default=10, ge=1)
+    recovery_wake_delay_seconds: int = Field(default=120, ge=60)
 
 
 class LocationConfig(BaseModel):

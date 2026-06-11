@@ -107,6 +107,90 @@ machine stays in AWAKE regardless of the schedule. The value is
 persisted to `/var/lib/streamer/sleep_enabled.json` and reloaded
 across restarts and (real) wake cycles.
 
+### Self power-cycle recovery
+
+Field experience with CSI-over-Cat6 camera extenders (THSER102A):
+the SerDes video link can wedge in a way that survives service
+restarts and even warm reboots — the sensor still answers on I2C
+("Configuration successful" in the logs) but no frames ever reach
+the CFE (`Dequeue timer expired`). Only a genuine power cut
+re-trains the link. With `POWER_OFF_ON_HALT=1` in the EEPROM,
+`rtcwake + poweroff` *is* a genuine power cut — the same mechanism
+the nightly sleep already uses.
+
+When `power.recovery_power_cycle = true`, the service uses that to
+rescue itself: a camera that fails `recovery_failure_threshold`
+consecutive in-stream recovery attempts (each ~16 s apart, so the
+default 5 ≈ 80 s of confirmed wedge) triggers an RTC alarm
+`recovery_wake_delay_seconds` out followed by a poweroff. Total
+outage is ~2–3 minutes, after which the Pi boots with freshly
+re-trained camera links.
+
+Guardrails:
+
+- At most `recovery_max_cycles_per_day` self-cycles per calendar
+  day (persisted to `/var/lib/streamer/recovery_cycles.json`, so
+  the counter survives the power cycles it counts). Once exhausted
+  the service stays up and serves whichever cameras still work.
+- No self-cycle within `recovery_boot_grace_minutes` of service
+  start: a camera that is dead (not just wedged) must not boot-loop
+  the Pi and drain the battery.
+- Never during `ENTERING_SLEEP`/`ASLEEP` — the sunset path owns
+  power there, and the wedge gets its power cut at sunset anyway.
+- `power.dry_run = true` logs the decision but skips the poweroff.
+
+Current cycle count is visible under `power.recovery` in
+`GET /api/status`.
+
+Validation status: the trigger logic and the self-power-off /
+self-wake mechanics are proven, but the *cure* is not yet — every
+confirmed wedge so far was cleared by a physical unplug, and the
+rtcwake path (electrically equivalent, ~2 min rails-down) has not
+yet been demonstrated against a live wedge. The feature therefore
+ships disabled. Run the playbook below on the first field wedge
+before enabling it.
+
+### Wedged-camera playbook
+
+When a camera stops streaming in the field, work through this on
+the Pi (SSH in over Tailscale):
+
+```bash
+# 1. Confirm the wedge signature: recovery attempts looping with
+#    "Dequeue timer expired" / "marked broken", while the sensor
+#    still configures successfully (I2C alive, CSI dead).
+journalctl -u streamer -b 0 | grep -iE "dequeue|broken|timeout" | tail -10
+
+# 2. Rule out the cheap fixes first. A service restart rebuilds the
+#    picamera2 instances; a warm reboot resets the SoC. Neither cuts
+#    power to the camera links, so a true SerDes wedge survives both.
+sudo systemctl restart streamer    # wait ~30 s, then re-test stream
+sudo reboot                        # if restart didn't help
+
+# 3. Manual power-cycle test: does a poweroff cycle cure the wedge?
+#    With POWER_OFF_ON_HALT=1 this genuinely cuts the rails; the RTC
+#    alarm brings the Pi back ~2 minutes later.
+sudo rtcwake -m no -t $(date -d '+2 minutes' +%s)
+sudo systemctl poweroff
+
+# 4. After the Pi self-powers back on (~2-3 min), test the stream:
+curl -sS --max-time 25 -o /dev/null \
+  -w 'cam1: %{size_download} bytes\n' http://localhost:8080/stream/cam1
+```
+
+Interpreting step 4:
+
+- **Streams again** → the rtcwake power cycle cures a real wedge.
+  Enable the automated version (`recovery_power_cycle = true` in
+  `/etc/streamer/streamer.toml`, then
+  `sudo systemctl restart streamer`) so future wedges self-heal
+  without a site visit.
+- **Still 0 bytes** → only a physical unplug re-trains this link;
+  do not enable the automated recovery (it would burn its daily
+  cycle budget for nothing). The fix is at the hardware layer:
+  reseat/replace the flex cables and extender pair on the affected
+  camera (a marginal FFC contact has been the root cause before).
+
 ## Cross-origin embed
 
 For the common deployment — Pi on solar/LTE, sleeping at night — the
@@ -159,6 +243,18 @@ three states:
   a dimmed card showing the next scheduled wake. The hosted page
   itself never becomes broken; only the live frame portion goes
   dark, and only until the next sunrise.
+
+Because the real sleep path powers the Pi (and its USB-powered LTE
+router) fully off, the status endpoint is unreachable overnight —
+the page can't *ask* whether the Pi is asleep. To bridge that, the
+widget caches the upcoming sleep/wake window (published as
+`schedule` on `/api/public/status`) in `localStorage` on every
+successful poll. When a poll then fails and the clock falls inside
+the cached window (day-shifted for returning visitors, capped at a
+week of staleness), the tiles show "Cameras are asleep — next wake
+…" instead of the generic offline card. A brand-new visitor whose
+browser has never reached the Pi sees the offline card until
+morning; everyone else gets the friendly message.
 
 Security note: `public_streams = true` is a public-internet opt-in.
 Treat the Funnel/Tunnel URL itself as a shared secret if you don't
@@ -252,6 +348,13 @@ dry_run            = false   # when true, the state machine still
                              # transitions to ASLEEP at sunset but
                              # never calls rtcwake / poweroff —
                              # /stream/* returns 503 SLEEPING.
+
+# Self power-cycle recovery (see "Self power-cycle recovery" above).
+recovery_power_cycle        = false  # opt-in; requires POWER_OFF_ON_HALT=1
+recovery_failure_threshold  = 5      # consecutive failed recoveries (~16 s apart)
+recovery_max_cycles_per_day = 3      # hard daily cap, persisted across cycles
+recovery_boot_grace_minutes = 10     # no self-cycle this soon after start
+recovery_wake_delay_seconds = 120    # RTC alarm lead before poweroff
 
 # ----- Phase 2 (opt-in) -----
 

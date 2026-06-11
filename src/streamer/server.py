@@ -402,10 +402,17 @@ class StreamerServer:
             "mode": "AWAKE",
             "next_event": None,
         }
+        schedule_window = (
+            self.power.schedule_window() if self.power is not None else None
+        )
         return web.json_response(
             {
                 "mode": power_snap["mode"],
                 "next_event": power_snap["next_event"],
+                # Both bounds of the upcoming off-window, for client-side
+                # caching: the embed uses it to show "asleep until HH:MM"
+                # while the Pi is powered off and unreachable.
+                "schedule": schedule_window,
                 "site_name": self.config.server.site_name or "Streamer",
                 "stream": {
                     "framerate": self.config.stream.framerate,
