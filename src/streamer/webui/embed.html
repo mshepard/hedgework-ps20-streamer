@@ -272,6 +272,12 @@
       </style>
       <script>
         (function () {
+          // MAINTAINER NOTE: this script deliberately contains no
+          // ampersand characters (no logical-AND operators — use
+          // ternaries or nested ifs instead). WordPress and similar
+          // CMSes entity-encode ampersands in pasted HTML blocks,
+          // which corrupts the script. Keep it that way.
+          //
           // One embed instance per .hedgework-cam-embed mount point.
           // Multiple mounts on a single page are supported; each one
           // gets its own poller and DOM subtree.
@@ -395,9 +401,12 @@
             // Drop the fetch after 8 s. Default ``fetch()`` has no
             // timeout, so a hung Pi would otherwise leave us forever
             // in the "first poll never returned" state on page load.
-            const abort = "AbortSignal" in window && AbortSignal.timeout
-              ? AbortSignal.timeout(8000)
-              : undefined;
+            const abort =
+              "AbortSignal" in window
+                ? AbortSignal.timeout
+                  ? AbortSignal.timeout(8000)
+                  : undefined
+                : undefined;
             try {
               const resp = await fetch(
                 `${state.piUrl}/api/public/status`,
@@ -425,9 +434,9 @@
 
           function render(state, ui) {
             // Top banner — shown only during ENTERING_SLEEP.
-            const mode = state.status && state.status.mode;
-            const next = state.status && state.status.next_event;
-            if (mode === "ENTERING_SLEEP" && next && next.at) {
+            const mode = state.status ? state.status.mode : null;
+            const next = state.status ? state.status.next_event : null;
+            if (mode === "ENTERING_SLEEP" ? (next ? next.at : false) : false) {
               const mins = minutesUntil(next.at);
               ui.banner.textContent =
                 `Cameras going to sleep in ${mins} minute${mins === 1 ? "" : "s"} ` +
@@ -441,7 +450,7 @@
             // camera. If the server is unreachable AND we've never
             // seen a status, fall back to a generic two-tile message.
             const cams =
-              (state.status && state.status.cameras) ||
+              (state.status ? state.status.cameras : null) ||
               (state.error
                 ? [
                     { camera_num: 0, display_name: "Camera 0" },
@@ -476,7 +485,7 @@
             });
 
             // Foot: data freshness / source attribution.
-            if (state.error && !inferredWake) {
+            if (state.error ? !inferredWake : false) {
               ui.foot.textContent =
                 "Live feed currently unreachable. Will retry automatically.";
             } else {
@@ -521,7 +530,7 @@
             delete t.img.dataset.streamUrl;
             t.msgTitle.textContent = "Cameras are asleep";
             t.msgSub.textContent =
-              next && next.at
+              (next ? next.at : false)
                 ? `Next wake: ${formatDateTime(next.at)}`
                 : "Will return at the next scheduled wake.";
             t.msg.classList.remove("hidden");
@@ -606,8 +615,10 @@
               sleep += DAY_MS;
               wake += DAY_MS;
             }
-            if (now >= sleep && now < wake) {
-              return new Date(wake).toISOString();
+            if (now >= sleep) {
+              if (now < wake) {
+                return new Date(wake).toISOString();
+              }
             }
             return null;
           }
@@ -637,11 +648,13 @@
             const d = new Date(iso);
             const now = new Date();
             // Same calendar day → just time. Otherwise include weekday.
-            if (
-              d.getFullYear() === now.getFullYear() &&
-              d.getMonth() === now.getMonth() &&
-              d.getDate() === now.getDate()
-            ) {
+            const sameDay =
+              d.getFullYear() === now.getFullYear()
+                ? d.getMonth() === now.getMonth()
+                  ? d.getDate() === now.getDate()
+                  : false
+                : false;
+            if (sameDay) {
               return formatTime(iso);
             }
             return d.toLocaleString([], {

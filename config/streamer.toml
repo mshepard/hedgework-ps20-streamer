@@ -30,8 +30,31 @@ public_streams = false
 
 [camera0]
 resolution = [1280, 720]
-# IMX708 sensor controls passed through to picamera2. Keep empty unless
-# tuning a specific scene.
+# IMX708 sensor controls passed through to picamera2. Leave empty for
+# default behaviour (continuous autofocus, auto exposure, auto white
+# balance). Useful tuning examples:
+#
+#   Manual focus pinned at ~7 inches in front of the camera:
+#     controls = { AfMode = 0, LensPosition = 5.6 }
+#
+#   Continuous autofocus (the IMX708 default when AfMode unset):
+#     controls = { AfMode = 2 }
+#
+# AfMode values:
+#   0 = Manual (use LensPosition)
+#   1 = Auto (single AF pass on first frame, then hold)
+#   2 = Continuous (re-focuses as the scene changes)
+#
+# LensPosition is in diopters (1 / distance-in-meters). Pi Camera 3
+# range is roughly 0.0 (infinity) to 10.0 (~10 cm, lens min).
+#   0.0  = infinity           3.3  = 30 cm
+#   1.0  = 1 m                4.9  = 20 cm   (~ 8 in)
+#   1.6  = 60 cm              5.6  = 18 cm   (~ 7 in)
+#   2.0  = 50 cm              6.6  = 15 cm   (~ 6 in)
+#                            10.0  = ~10 cm  (lens minimum)
+#
+# Tune empirically with libcamera-still — see "Tuning the cameras"
+# in the README.
 controls = {}
 # Optional human-friendly label shown on the public /cam0 page header.
 # Empty falls back to "Camera 0".
@@ -39,6 +62,8 @@ name = ""
 
 [camera1]
 resolution = [1280, 720]
+# Same control surface as [camera0] above. See its comments for the
+# focus / AfMode / LensPosition reference.
 controls = {}
 name = ""
 

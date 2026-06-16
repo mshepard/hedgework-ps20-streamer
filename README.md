@@ -382,6 +382,75 @@ with the schedule disabled — refusing to compute sunrise/sunset for
 the Null Island origin is safer than silently halting the Pi at the
 wrong time. Set real coordinates and restart.
 
+### Tuning the cameras
+
+The `controls` field on each `[camera*]` block is a dict of
+[libcamera/picamera2 controls](https://libcamera.org/api-html/namespacelibcamera_1_1controls.html)
+that get applied when the camera starts. Leave it empty for sensible
+defaults (continuous autofocus, auto exposure, auto white balance).
+The two most useful overrides for fixed-mount cameras are manual
+focus and exposure clamps.
+
+**Manual focus** (e.g. for a close-range bird-feeder cam at ~7 inches):
+
+```toml
+[camera0]
+controls = { AfMode = 0, LensPosition = 5.6 }
+```
+
+- `AfMode`: `0` = Manual, `1` = single Auto on first frame, `2` =
+  Continuous (default when unset).
+- `LensPosition`: focus distance in **diopters** (1 / distance in
+  metres). The IMX708 lens covers ~10 cm (LP=10) to infinity (LP=0).
+  Common targets:
+
+  | Distance       | LensPosition |
+  |----------------|-------------:|
+  | 6 in (15 cm)   |          6.6 |
+  | 7 in (18 cm)   |          5.6 |
+  | 8 in (20 cm)   |          4.9 |
+  | 30 cm          |          3.3 |
+  | 1 m            |          1.0 |
+  | infinity       |          0.0 |
+
+  Formula: `LensPosition = 1 / (distance_in_inches × 0.0254)`.
+
+**Dialing in the value empirically.** Rather than guess, stop the
+service and snap test shots with `libcamera-still`:
+
+```bash
+sudo systemctl stop streamer
+
+for lp in 4.9 5.3 5.6 6.0 6.6; do
+  libcamera-still --camera 0 --autofocus-mode manual \
+    --lens-position $lp --width 1280 --height 720 -n \
+    -o /tmp/cam0_lp${lp}.jpg
+done
+
+# scp /tmp/cam0_lp*.jpg back to your workstation, pick the sharpest,
+# put its value in streamer.toml, then:
+sudo systemctl start streamer
+```
+
+After restarting the service, the lens motor will click briefly as
+it moves to the configured position.
+
+**Other useful controls** (passed through identically):
+
+- `ExposureTime` (integer microseconds) — pin shutter speed for
+  consistent motion blur across lighting changes.
+- `AnalogueGain` (float) — pin ISO. Combine with `ExposureTime` for
+  a fully manual exposure.
+- `AwbEnable = false` + `ColourGains = [red, blue]` — pin white
+  balance. Useful when the scene's average colour throws AWB off
+  (lots of green foliage, etc.).
+- `Brightness`, `Contrast`, `Saturation`, `Sharpness` — image
+  cosmetics in the range `-1.0..+1.0` (`0.0..32.0` for `Sharpness`).
+
+A full list lives in the libcamera control IDs documentation linked
+above; everything you pass in `controls = {…}` is forwarded verbatim
+to `picam2.create_video_configuration(controls=…)`.
+
 ### Bandwidth and power
 
 - ~80 KB per frame at 1280x720 JPEG quality 75
