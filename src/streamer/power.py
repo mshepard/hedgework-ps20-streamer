@@ -120,6 +120,8 @@ class PowerManager:
         # Server-installed callback that cancels all active /stream/*
         # tasks. Set via ``attach_stream_canceller``.
         self._stream_canceller: Callable[[], Awaitable[None]] | None = None
+        # Wildlife sync flush before sleep (ENTERING_SLEEP).
+        self._sleep_flush_callback: Callable[[], Awaitable[None]] | None = None
 
     # ---------- read-only accessors ----------
 
@@ -214,6 +216,11 @@ class PowerManager:
         self, cb: Callable[[], Awaitable[None]]
     ) -> None:
         self._stream_canceller = cb
+
+    def attach_sleep_flush_callback(
+        self, cb: Callable[[], Awaitable[None]]
+    ) -> None:
+        self._sleep_flush_callback = cb
 
     async def set_sleep_enabled(self, value: bool) -> bool:
         async with self._lock:
@@ -500,46 +507,50 @@ class PowerManager:
         # _tick after boot, ``_warm_held`` is already populated by
         # ``apply_initial_hold`` so this is a no-op (the cameras are
         # already held).
-        if not self._config.power.keep_cameras_warm:
-            return
-        if self._warm_held:
-            return
-        for cam in self._cameras.all():
-            try:
-                await asyncio.wait_for(
-                    cam.acquire(),
-                    timeout=AWAKE_ACQUIRE_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                logger.error(
-                    "Re-acquire of camera %d timed out after %.0fs on "
-                    "AWAKE entry; leaving it unheld so the state "
-                    "machine doesn't wedge (viewer-initiated acquire "
-                    "will trigger normal recovery)",
-                    cam.camera_num,
-                    AWAKE_ACQUIRE_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                logger.exception(
-                    "Re-acquire of camera %d failed on AWAKE entry",
-                    cam.camera_num,
-                )
-            else:
-                self._warm_held.append(cam)
+        if self._config.power.keep_cameras_warm and not self._warm_held:
+            for cam in self._cameras.all():
+                try:
+                    await asyncio.wait_for(
+                        cam.acquire(),
+                        timeout=AWAKE_ACQUIRE_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Re-acquire of camera %d timed out after %.0fs on "
+                        "AWAKE entry; leaving it unheld so the state "
+                        "machine doesn't wedge (viewer-initiated acquire "
+                        "will trigger normal recovery)",
+                        cam.camera_num,
+                        AWAKE_ACQUIRE_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Re-acquire of camera %d failed on AWAKE entry",
+                        cam.camera_num,
+                    )
+                else:
+                    self._warm_held.append(cam)
+        await self._cameras.start_publishers()
 
     async def _enter_entering_sleep(self) -> None:
         # ENTERING_SLEEP does not yet release cameras — viewers keep
         # streaming, they just see the Warning header. The release
         # happens at the actual ASLEEP transition so we don't cool
         # the pipeline early.
-        return
+        if self._sleep_flush_callback is not None:
+            try:
+                await self._sleep_flush_callback()
+            except Exception:
+                logger.exception("Sleep flush callback failed")
 
     async def _enter_asleep(
         self, decision: ScheduleDecision | None
     ) -> None:
-        # 1. Drop the warmup-hold so the cameras can idle-stop.
+        # 1. Stop shared frame publishers before releasing cameras.
+        await self._cameras.stop_publishers()
+        # 2. Drop the warmup-hold so the cameras can idle-stop.
         await self._release_warm_held()
-        # 2. Cancel in-flight streams. Real ASLEEP is about to halt
+        # 3. Cancel in-flight streams. Real ASLEEP is about to halt
         #    the Pi; dry_run ASLEEP still wants the disconnect so
         #    viewers' next request hits the 503 SLEEPING path.
         if self._stream_canceller is not None:

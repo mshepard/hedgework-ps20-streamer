@@ -76,6 +76,9 @@ name = ""
 framerate = 1.0
 # JPEG quality 1-95. Higher = bigger file. 75 is a reasonable balance.
 jpeg_quality = 75
+# Close each MJPEG viewer connection after this many seconds. A forgotten
+# browser tab otherwise holds LTE bandwidth indefinitely. 0 = no limit.
+max_duration_seconds = 3600
 
 [power]
 disable_act_led = true
@@ -153,3 +156,36 @@ wake_lead_minutes = 5
 modem_probe_target = "1.1.1.1"
 modem_probe_interval_seconds = 60
 modem_probe_timeout_seconds = 5
+
+# ----- Wildlife identification (opt-in) -----
+
+[wildlife]
+enabled = false
+# Global fallback when per-camera model_path is empty
+model_path = ""
+labels_path = ""
+confidence_threshold = 0.55
+cooldown_seconds = 30.0
+inference_size = [640, 640]
+store_annotated = true
+
+[camera0.wildlife]
+# NABirds-trained bird model (see training/README.md)
+model_path = "/var/lib/streamer/models/bird_v1.hef"
+labels_path = "/var/lib/streamer/models/bird_v1.json"
+classes = []
+
+[camera1.wildlife]
+# Georgia Tech Roboflow pollinator model (see training/README.md)
+model_path = "/var/lib/streamer/models/pollinator_v1.hef"
+labels_path = "/var/lib/streamer/models/pollinator_v1.json"
+classes = []
+
+[wildlife.sync]
+enabled = false
+wordpress_url = "https://ps20.hedgework.net"
+wordpress_user = ""
+wordpress_app_password = ""
+batch_size = 5
+max_uploads_per_hour = 30
+resize_width = 800

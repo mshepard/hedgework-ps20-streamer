@@ -1,0 +1,211 @@
+/* Hedgerow single-camera embed — namespaced under .hedgework-cam-embed-single */
+
+.hedgework-cam-embed-single {
+  --hcs-orange: #ff8c44;
+  --hcs-orange-hover: #ff7d2c;
+  --hcs-dark: #15312b;
+  --hcs-yellow: #f4ef9a;
+  --hcs-pink: #f6ccd5;
+  --hcs-font: "Inter", "Inter Fallback", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+
+  font-family: var(--hcs-font);
+  color: var(--hcs-dark);
+  font-size: 15px;
+  line-height: 1.55;
+  background: transparent;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.hedgework-cam-embed-single * {
+  box-sizing: border-box;
+}
+
+.hedgework-cam-embed-single .hcs-banner {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--hcs-yellow);
+  color: var(--hcs-dark);
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.hedgework-cam-embed-single .hcs-banner.hidden {
+  display: none;
+}
+
+.hedgework-cam-embed-single .hidden {
+  display: none;
+}
+
+.hedgework-cam-embed-single .hcs-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(21, 49, 43, 0.1);
+  box-shadow:
+    0 1px 2px rgba(21, 49, 43, 0.06),
+    0 8px 24px rgba(21, 49, 43, 0.06);
+}
+
+.hedgework-cam-embed-single .hcs-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--hcs-pink);
+  border-bottom: 1px solid rgba(21, 49, 43, 0.08);
+}
+
+.hedgework-cam-embed-single .hcs-name {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hcs-dark);
+}
+
+.hedgework-cam-embed-single .hcs-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hcs-orange);
+  margin-left: auto;
+  box-shadow: 0 0 0 0 rgba(255, 140, 68, 0.6);
+  animation: hcs-pulse 1.4s ease-out infinite;
+}
+
+.hedgework-cam-embed-single .hcs-live-dot.dim {
+  background: rgba(21, 49, 43, 0.25);
+  animation: none;
+}
+
+@keyframes hcs-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 140, 68, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(255, 140, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 140, 68, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hedgework-cam-embed-single .hcs-live-dot {
+    animation: none;
+  }
+}
+
+.hedgework-cam-embed-single .hcs-stage {
+  position: relative;
+  background: #111;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  display: block;
+}
+
+.hedgework-cam-embed-single .hcs-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #111;
+}
+
+.hedgework-cam-embed-single .hcs-stage img.hidden {
+  display: none;
+}
+
+.hedgework-cam-embed-single .hcs-stage .hcs-stage-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(21, 49, 43, 0.85) 0%,
+    rgba(21, 49, 43, 0.95) 100%
+  );
+  color: #fff;
+  text-align: center;
+}
+
+.hedgework-cam-embed-single .hcs-stage .hcs-stage-msg.hidden {
+  display: none;
+}
+
+.hedgework-cam-embed-single .hcs-msg-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.hedgework-cam-embed-single .hcs-msg-sub {
+  font-size: 13px;
+  opacity: 0.85;
+  font-weight: 400;
+}
+
+.hedgework-cam-embed-single .hcs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fff;
+  border-top: 1px solid rgba(21, 49, 43, 0.08);
+}
+
+.hedgework-cam-embed-single .hcs-btn {
+  font-family: var(--hcs-font);
+  background: var(--hcs-orange);
+  color: #fff;
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  border-radius: 4px;
+  padding: 8px 16px;
+  min-height: 36px;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+
+.hedgework-cam-embed-single .hcs-btn:hover:not(:disabled) {
+  background: var(--hcs-orange-hover);
+}
+
+.hedgework-cam-embed-single .hcs-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.hedgework-cam-embed-single .hcs-btn-icon {
+  padding: 8px 12px;
+  font-size: 16px;
+  line-height: 1;
+  margin-left: auto;
+}
+
+.hedgework-cam-embed-single .hcs-foot {
+  margin-top: 12px;
+  font-size: 11px;
+  color: rgba(21, 49, 43, 0.5);
+  text-align: right;
+  padding: 0 4px;
+}
+
+.hedgework-cam-embed-single .hcs-flash {
+  font-size: 12px;
+  color: rgba(21, 49, 43, 0.65);
+  min-height: 1.2em;
+}

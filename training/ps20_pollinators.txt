@@ -1,0 +1,13 @@
+# PS 20 pollinator whitelist for Georgia Tech Roboflow → cam1 model.
+#
+# One class per line; must match Roboflow export class names exactly
+# (check data.yaml after export). Lines starting with # are ignored.
+#
+# Source: https://universe.roboflow.com/georgia-institute-of-technology-bqtzy/pollinators
+# Export format: YOLOv8
+#
+bee
+butterfly
+moth
+beetle
+grasshopper

@@ -22,9 +22,9 @@ no WebRTC, no client-side polling state machine.
   cross-origin embeds (mode, next_event, site_name, cameras,
   stream.framerate); anonymous when `[server] public_streams = true`,
   token-gated otherwise
-- `GET /embed` — copy-pasteable HTML/JS snippet that renders both
-  camera tiles in an externally-hosted page (e.g. WordPress) with a
-  friendly sleep / offline fallback
+- `GET /embed/cam0`, `/embed/cam1` — per-camera cross-origin embed
+  demo + docs (snapshot, fullscreen, sleep fallback)
+- `GET /embed` — legacy dual-tile embed snippet (deprecated)
 - `GET  /api/admin/sleep-enabled` — JSON: current sleep override state
 - `POST /api/admin/sleep-enabled` — `{"enabled": bool}` to suppress
   (or re-enable) the schedule, persisted to
@@ -211,36 +211,46 @@ Setting `[server] public_streams = true` enables this:
 - The token-protected `/api/status`, `/api/info`, and
   `/api/admin/*` endpoints stay locked. Admins keep their bearer-
   token surface; only the read-only viewer endpoints open up.
-- A copy-pasteable snippet is published at `/embed`. It renders a
-  live two-tile demo using the same code you'd paste into your
-  CMS, with sleep/offline fallbacks already wired in.
+- A per-camera embed is published at `/embed/cam0` and
+  `/embed/cam1` (docs + live demo). Each page gets its own widget
+  with snapshot and fullscreen controls. A WordPress shortcode plugin
+  lives in `wordpress/`; alternatively upload `embed-cam.css` and
+  `embed-cam.js` to your CMS.
+- The legacy dual-tile snippet at `/embed` still works but is not
+  recommended for new pages.
 
-To deploy:
+To deploy (one embed per camera page):
 
 1. Set `public_streams = true` in `streamer.toml` and restart the
    service.
 2. Ensure the Pi is reachable on a stable public URL (Tailscale
-   Funnel and Cloudflare Tunnel both work; the embed JS uses
-   absolute URLs against whatever you put in `data-pi-url`).
-3. Open `https://<your-pi-url>/embed` and view-source. Copy
-   everything between the `===== SNIPPET BEGIN` and
-   `===== SNIPPET END` comments.
-4. Paste into a WordPress Custom HTML block (or any plain
-   `<div>`-rooted container).
-5. Edit the mount `<div>`'s `data-pi-url` to your Pi's URL, e.g.
-   `data-pi-url="https://hedgebuggy.tailfoo.ts.net"`.
+   Funnel and Cloudflare Tunnel both work).
+3. **WordPress plugin (recommended):** copy `wordpress/` to
+   `wp-content/plugins/hedgework-cam-embed/`, activate, and add a
+   shortcode per camera page:
+   ```
+   [hedgework_cam camera="0" pi_url="https://hedgebuggy.tailfoo.ts.net"]
+   [hedgework_cam camera="1" pi_url="https://hedgebuggy.tailfoo.ts.net"]
+   ```
+4. **Custom HTML:** upload `embed-cam.css` and `embed-cam.js` from
+   `src/streamer/webui/` (or fetch from `/static/` on the Pi) to your
+   WordPress media library, then paste a mount `<div>` plus `<link>`
+   and `<script>` tags on each camera page. See `/embed/cam0` for the
+   full example.
+
+Set `data-pi-url` / shortcode `pi_url` to your Pi's public URL (no
+trailing slash). Set `data-camera` / shortcode `camera` to `0` or `1`.
 
 The widget polls `/api/public/status` every 20 s (configurable via
-`data-poll-interval-ms` on the mount div) and switches between
-three states:
+`data-poll-interval-ms` on the mount div or shortcode
+`poll_interval_ms`) and switches between three states:
 
-- **AWAKE** — both tiles render live MJPEG via `<img src>`. Browser
-  handles the multipart parsing natively; no JS in the per-frame
-  path.
-- **ENTERING_SLEEP** — streams stay live; a yellow banner counts
+- **AWAKE** — live MJPEG via `<img src>`. Snapshot saves the current
+  frame as a JPEG download; fullscreen expands the video stage.
+- **ENTERING_SLEEP** — stream stays live; a yellow banner counts
   down to the impending sleep transition.
-- **ASLEEP or Pi unreachable** — tiles replace their `<img>` with
-  a dimmed card showing the next scheduled wake. The hosted page
+- **ASLEEP or Pi unreachable** — the `<img>` is replaced with a
+  dimmed card showing the next scheduled wake. The hosted page
   itself never becomes broken; only the live frame portion goes
   dark, and only until the next sunrise.
 
@@ -251,7 +261,7 @@ widget caches the upcoming sleep/wake window (published as
 `schedule` on `/api/public/status`) in `localStorage` on every
 successful poll. When a poll then fails and the clock falls inside
 the cached window (day-shifted for returning visitors, capped at a
-week of staleness), the tiles show "Cameras are asleep — next wake
+week of staleness), the card shows "Camera is asleep — next wake
 …" instead of the generic offline card. A brand-new visitor whose
 browser has never reached the Pi sees the offline card until
 morning; everyone else gets the friendly message.
@@ -334,6 +344,8 @@ name       = ""
 [stream]
 framerate    = 1.0           # 0.25..15; sensor matches this rate
 jpeg_quality = 75            # 1..95
+max_duration_seconds = 3600  # per-viewer MJPEG cap; 0 = unlimited
+                             # embed shows "Watch live" after — no auto-reconnect
 
 [power]
 disable_act_led    = true    # best-effort; needs root in Phase 1
@@ -544,9 +556,9 @@ Implemented in this release:
   service user exactly `/usr/sbin/rtcwake` and `/usr/bin/systemctl
   poweroff` (no other privileged commands).
 - Cross-origin embed (`[server] public_streams = true`): anonymous
-  `/api/public/status` + `/stream/*` with CORS headers, plus a
-  copy-pasteable snippet at `/embed` for hosting both camera tiles
-  on a third-party page.
+  `/api/public/status` + `/stream/*` with CORS headers, plus per-camera
+  widgets at `/embed/cam0` and `/embed/cam1` (WordPress shortcode in
+  `wordpress/`).
 
 ## Phase 2.5 (planned)
 

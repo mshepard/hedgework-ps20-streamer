@@ -12,7 +12,8 @@ Endpoints:
   Unauthenticated:
     GET /                        -> landing page linking /cam0 and /cam1
     GET /cam0, /cam1             -> per-camera viewer HTML
-    GET /embed                   -> copy-pasteable cross-origin embed snippet
+    GET /embed                   -> copy-pasteable cross-origin embed snippet (legacy dual-tile)
+    GET /embed/cam0, /embed/cam1 -> per-camera embed demo + docs
     GET /static/<file>           -> CSS / JS / images / favicon
     GET /health                  -> liveness probe
 
@@ -68,52 +69,33 @@ from streamer import __version__
 from streamer.cameras import Camera, CameraManager
 from streamer.config import AppConfig
 from streamer.mjpeg import CONTENT_TYPE as MJPEG_CONTENT_TYPE
-from streamer.mjpeg import encode_jpeg, part
+from streamer.mjpeg import part
 from streamer.power import Mode
 
 if TYPE_CHECKING:
     from streamer.modem import ModemProbe
     from streamer.power import PowerManager
+    from streamer.wildlife.manager import WildlifeManager
 
 logger = logging.getLogger("streamer.server")
 
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
-# Per-frame capture timeout. ``Camera.capture`` runs in a per-camera
-# thread, so a TimeoutError here only unblocks the awaiting coroutine
-# — the underlying thread is still wedged inside libcamera. We mark
-# the camera broken so the next acquire rebuilds the picamera2
-# instance.
-#
-# We split the timeout into two regimes because they have very
-# different expected latencies:
-#
-#   * **First frame after a fresh acquire.** Has to wait for one full
-#     ``FrameDurationLimits`` interval *and* for libcamera's IPA/3A
-#     (AGC/AWB) to converge across several frames. At 1 fps this can
-#     reach 5-10 s; ``FIRST_FRAME_TIMEOUT_SECONDS`` is set well above
-#     that so a slow cold start isn't mistaken for a wedge.
-#   * **Steady-state frames.** A healthy capture completes in ~50 ms
-#     regardless of framerate. The effective steady-state timeout is
-#     ``max(CAPTURE_TIMEOUT_FLOOR_SECONDS,
-#     CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER × frame_interval)``: tight
-#     enough at 15 fps to detect a wedge quickly, generous enough at
-#     1 fps to absorb scheduler jitter without false positives.
-#
-# After a recovery (mark_broken → release → re-acquire), the next
-# capture is again considered "first frame" — the picamera2 instance
-# was just rebuilt.
-FIRST_FRAME_TIMEOUT_SECONDS = 15.0
-CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
-CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
-
 # Paths that bypass auth entirely. The static UI bundle, the four
 # HTML entrypoints (landing, cam pages, embed snippet), and ``/health``
 # must be reachable anonymously so the browser can load them before
 # it has a token. Everything data-bearing falls through to the token
 # check below.
-UNAUTH_EXACT = {"/", "/health", "/cam0", "/cam1", "/embed"}
+UNAUTH_EXACT = {
+    "/",
+    "/health",
+    "/cam0",
+    "/cam1",
+    "/embed",
+    "/embed/cam0",
+    "/embed/cam1",
+}
 UNAUTH_PREFIXES = ("/static/",)
 
 # Paths that may be served anonymously when ``[server] public_streams``
@@ -225,11 +207,13 @@ class StreamerServer:
         cameras: CameraManager,
         power: "PowerManager | None" = None,
         modem: "ModemProbe | None" = None,
+        wildlife: "WildlifeManager | None" = None,
     ) -> None:
         self.config = config
         self.cameras = cameras
         self.power = power
         self.modem = modem
+        self.wildlife = wildlife
         # Set of in-flight stream connections, for clean shutdown
         # and for the power state machine to cancel on ASLEEP entry.
         self._active_streams: set[asyncio.Task] = set()
@@ -253,6 +237,8 @@ class StreamerServer:
         app.router.add_get("/cam0", self._camera_page)
         app.router.add_get("/cam1", self._camera_page)
         app.router.add_get("/embed", self._embed_page)
+        app.router.add_get("/embed/cam0", self._embed_cam_page)
+        app.router.add_get("/embed/cam1", self._embed_cam_page)
         app.router.add_get("/health", self._health)
 
         # Public (anonymous when public_streams=true; token-gated otherwise).
@@ -263,6 +249,11 @@ class StreamerServer:
         app.router.add_get("/api/info", self._info)
         app.router.add_get("/api/admin/sleep-enabled", self._get_sleep_enabled)
         app.router.add_post("/api/admin/sleep-enabled", self._set_sleep_enabled)
+        app.router.add_get("/api/wildlife/recent", self._wildlife_recent)
+        app.router.add_get("/api/wildlife/counts", self._wildlife_counts)
+        app.router.add_get(
+            r"/api/wildlife/images/{detection_id:\d+}", self._wildlife_image
+        )
         app.router.add_get(r"/stream/cam{cam:\d+}", self._stream)
 
         # Static assets last so it doesn't shadow more specific routes.
@@ -295,11 +286,13 @@ class StreamerServer:
         return web.FileResponse(WEBUI_DIR / "cam.html")
 
     async def _embed_page(self, request: web.Request) -> web.Response:
-        # The /embed page hosts the copy-pasteable third-party
-        # embed snippet. It's also a working demo of the snippet —
-        # view-source gives operators the exact HTML to paste into
-        # their CMS.
+        # Legacy dual-tile embed snippet.
         return web.FileResponse(WEBUI_DIR / "embed.html")
+
+    async def _embed_cam_page(self, request: web.Request) -> web.Response:
+        # Per-camera embed demo + documentation. Camera number is
+        # inferred from the URL path (/embed/cam0, /embed/cam1).
+        return web.FileResponse(WEBUI_DIR / "embed-cam.html")
 
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "version": __version__})
@@ -416,6 +409,7 @@ class StreamerServer:
                 "site_name": self.config.server.site_name or "Streamer",
                 "stream": {
                     "framerate": self.config.stream.framerate,
+                    "max_duration_seconds": self.config.stream.max_duration_seconds,
                 },
                 "cameras": [
                     {
@@ -433,6 +427,65 @@ class StreamerServer:
         if cfg is not None and getattr(cfg, "name", ""):
             return cfg.name
         return f"Camera {camera_num}"
+
+    # ---------- Wildlife API ----------
+
+    async def _wildlife_recent(self, request: web.Request) -> web.Response:
+        if self.wildlife is None or not self.wildlife.enabled:
+            return web.json_response({"detections": []})
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except ValueError:
+            return web.json_response({"error": "invalid limit"}, status=400)
+        limit = max(1, min(limit, 100))
+        conn = await self.wildlife.database.connect()
+        try:
+            rows = await self.wildlife.database.recent(conn, limit=limit)
+        finally:
+            await conn.close()
+        from streamer.wildlife.db import WildlifeDatabase
+
+        return web.json_response(
+            {
+                "detections": [
+                    WildlifeDatabase.row_to_json(row) for row in rows
+                ]
+            }
+        )
+
+    async def _wildlife_counts(self, request: web.Request) -> web.Response:
+        if self.wildlife is None or not self.wildlife.enabled:
+            return web.json_response({"counts": []})
+        period = request.query.get("period", "today")
+        if period != "today":
+            return web.json_response(
+                {"error": "only period=today is supported"}, status=400
+            )
+        conn = await self.wildlife.database.connect()
+        try:
+            counts = await self.wildlife.database.counts_today(conn)
+        finally:
+            await conn.close()
+        return web.json_response({"counts": counts})
+
+    async def _wildlife_image(self, request: web.Request) -> web.Response:
+        if self.wildlife is None or not self.wildlife.enabled:
+            return web.json_response({"error": "wildlife disabled"}, status=404)
+        try:
+            detection_id = int(request.match_info["detection_id"])
+        except (KeyError, ValueError):
+            return web.json_response({"error": "invalid id"}, status=400)
+        conn = await self.wildlife.database.connect()
+        try:
+            row = await self.wildlife.database.get_by_id(conn, detection_id)
+        finally:
+            await conn.close()
+        if row is None:
+            return web.json_response({"error": "not found"}, status=404)
+        path = Path(row["image_path"])
+        if not path.is_file():
+            return web.json_response({"error": "image missing"}, status=404)
+        return web.FileResponse(path)
 
     # ---------- MJPEG stream ----------
 
@@ -456,7 +509,7 @@ class StreamerServer:
                 reason="SLEEPING",
             )
 
-        cam = self.cameras.get(camera_num)
+        publisher = self.cameras.publisher(camera_num)
         peer = request.remote
         log = logger.getChild(f"stream.cam{camera_num}")
         log.info("Stream open from %s", peer)
@@ -495,94 +548,54 @@ class StreamerServer:
         if task is not None:
             self._active_streams.add(task)
 
-        target_interval = 1.0 / max(self.config.stream.framerate, 0.01)
-        steady_timeout = max(
-            CAPTURE_TIMEOUT_FLOOR_SECONDS,
-            CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER * target_interval,
-        )
-        jpeg_quality = self.config.stream.jpeg_quality
-        loop = asyncio.get_running_loop()
         frames_written = 0
+        last_generation = -1
+        max_duration = self.config.stream.max_duration_seconds
+        stream_start = time.monotonic()
+        timed_out = False
 
-        # We manage acquire/release manually rather than using
-        # ``async with cam.session()`` so that a capture timeout can
-        # mark the camera broken, release the refcount, and re-acquire
-        # to trigger the recovery path — all while keeping the same
-        # HTTP connection (and the user's <img>) alive.
-        acquired = False
-        # Reset to 0 on every (re-)acquire so the next capture uses
-        # the generous first-frame timeout.
-        frames_since_acquire = 0
         try:
             while True:
-                if not acquired:
-                    try:
-                        await cam.acquire()
-                    except Exception:
-                        log.exception("Camera acquire failed; closing stream")
-                        break
-                    acquired = True
-                    frames_since_acquire = 0
-
-                cycle_start = time.monotonic()
-                this_timeout = (
-                    FIRST_FRAME_TIMEOUT_SECONDS
-                    if frames_since_acquire == 0
-                    else steady_timeout
-                )
-                try:
-                    array = await asyncio.wait_for(
-                        cam.capture(), timeout=this_timeout
+                if (
+                    max_duration > 0
+                    and time.monotonic() - stream_start >= max_duration
+                ):
+                    timed_out = True
+                    log.info(
+                        "Stream max duration (%ds) reached; closing",
+                        max_duration,
                     )
-                except (asyncio.TimeoutError, TimeoutError):
-                    log.warning(
-                        "Capture timeout on camera %d after %.1fs "
-                        "(frames_since_acquire=%d); recovering",
-                        camera_num,
-                        this_timeout,
-                        frames_since_acquire,
-                    )
-                    cam.mark_broken()
-                    await cam.release()
-                    acquired = False
-                    # Brief pause before the next acquire so we don't
-                    # spin tightly through repeated recovery attempts
-                    # if libcamera is genuinely down.
-                    await asyncio.sleep(target_interval)
-                    continue
-
-                frames_since_acquire += 1
-                jpeg = await loop.run_in_executor(
-                    None, encode_jpeg, array, jpeg_quality
-                )
+                    break
                 try:
-                    await resp.write(part(jpeg))
+                    frame = await publisher.wait_frame(last_generation)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Publisher wait failed; closing stream")
+                    break
+
+                last_generation = frame.generation
+                try:
+                    await resp.write(part(frame.jpeg))
                 except (ConnectionResetError, asyncio.CancelledError):
                     raise
                 except Exception:
                     log.exception("Write failed; closing stream")
                     break
                 frames_written += 1
-
-                elapsed = time.monotonic() - cycle_start
-                remaining = target_interval - elapsed
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
         except (ConnectionResetError, asyncio.CancelledError):
             # Normal: client disconnected, or server shutdown.
             pass
         except Exception:
             log.exception("Stream loop crashed")
         finally:
-            if acquired:
-                try:
-                    await cam.release()
-                except Exception:
-                    log.exception("Release failed")
             if task is not None:
                 self._active_streams.discard(task)
             log.info(
-                "Stream closed for %s after %d frames", peer, frames_written
+                "Stream closed for %s after %d frames%s",
+                peer,
+                frames_written,
+                " (max duration)" if timed_out else "",
             )
             try:
                 await resp.write_eof()

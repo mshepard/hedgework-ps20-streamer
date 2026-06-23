@@ -19,6 +19,7 @@ const els = {
   liveIndicator: document.getElementById("live-indicator"),
   start: document.getElementById("start-btn"),
   stop: document.getElementById("stop-btn"),
+  snapshot: document.getElementById("snapshot-btn"),
   fullscreen: document.getElementById("fullscreen-btn"),
   statusBanner: document.getElementById("status-banner"),
 };
@@ -158,6 +159,7 @@ function startStreaming() {
     `?key=${encodeURIComponent(state.key)}&t=${bust}`;
   hideOverlay();
   setLiveIndicator(true);
+  els.snapshot.disabled = false;
 }
 
 function stopStreaming() {
@@ -170,6 +172,7 @@ function stopStreaming() {
   // camera refcount.
   els.frame.removeAttribute("src");
   setLiveIndicator(false);
+  els.snapshot.disabled = true;
   showOverlay("Stopped. Press Start to resume.", "info");
 }
 
@@ -179,6 +182,35 @@ function toggleFullscreen() {
   } else if (document.exitFullscreen) {
     document.exitFullscreen();
   }
+}
+
+function takeSnapshot() {
+  const img = els.frame;
+  if (!state.streaming || !img.naturalWidth) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(img, 0, 0);
+  canvas.toBlob(
+    (blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const slug = (state.cameraName || `camera-${state.cameraNum}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `${slug || "camera"}-${ts}.jpg`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    "image/jpeg",
+    0.92,
+  );
 }
 
 function init() {
@@ -203,6 +235,7 @@ function init() {
 
   els.start.addEventListener("click", startStreaming);
   els.stop.addEventListener("click", stopStreaming);
+  els.snapshot.addEventListener("click", takeSnapshot);
   els.fullscreen.addEventListener("click", toggleFullscreen);
 
   // If the browser drops the MJPEG connection (carrier flap, server

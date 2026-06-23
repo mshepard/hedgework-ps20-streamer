@@ -76,6 +76,9 @@ install_apt_deps() {
         util-linux \
         ca-certificates \
         curl
+    # Optional: Hailo AI HAT+ runtime for wildlife inference.
+    # Uncomment when deploying with the Raspberry Pi AI HAT+:
+    # DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hailo-all
 }
 
 install_tailscale() {
@@ -111,6 +114,8 @@ create_directories() {
     # whatever else the runtime needs to persist across restarts). Mode
     # 0750 so only the streamer user and root can read it.
     install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 "${STATE_DIR}"
+    install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 "${STATE_DIR}/detections"
+    install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0750 "${STATE_DIR}/models"
 }
 
 install_sudoers() {

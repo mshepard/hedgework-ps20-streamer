@@ -1,0 +1,84 @@
+.hedgework-wildlife-watch {
+  --brand-orange: #ff8c44;
+  --brand-dark: #15312b;
+  --brand-blue: #9eccde;
+  --brand-cream: #fafbfc;
+  --brand-pink: #f6ccd5;
+  font-family: Inter, system-ui, sans-serif;
+  color: var(--brand-dark);
+  background: var(--brand-cream);
+  padding: 1.5rem;
+  border-radius: 12px;
+}
+
+.hedgework-wildlife-watch .hww-hero h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+.hedgework-wildlife-watch .hww-subtitle {
+  margin: 0 0 1.5rem;
+  opacity: 0.85;
+}
+
+.hedgework-wildlife-watch .hww-counts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.hedgework-wildlife-watch .hww-count-tile {
+  background: #fff;
+  border: 2px solid var(--brand-blue);
+  border-radius: 10px;
+  padding: 1rem;
+  text-align: center;
+}
+
+.hedgework-wildlife-watch .hww-count-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--brand-orange);
+  line-height: 1;
+}
+
+.hedgework-wildlife-watch .hww-count-label {
+  margin-top: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.hedgework-wildlife-watch .hww-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.hedgework-wildlife-watch .hww-card {
+  background: #fff;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(21, 49, 43, 0.08);
+}
+
+.hedgework-wildlife-watch .hww-card img {
+  display: block;
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+}
+
+.hedgework-wildlife-watch .hww-card figcaption {
+  padding: 0.6rem 0.75rem;
+  font-weight: 600;
+}
+
+.hedgework-wildlife-watch .hww-loading,
+.hedgework-wildlife-watch .hww-empty {
+  opacity: 0.75;
+}
+
+.hedgework-wildlife-watch .hww-camera-note {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}

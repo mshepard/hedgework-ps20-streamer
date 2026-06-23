@@ -1,0 +1,26 @@
+# PS 20 bird whitelist for NABirds → cam0 (bird feeder model).
+#
+# One output class per line. Each line is matched as a substring against
+# NABirds classes.txt descriptions (case-insensitive), so all plumages
+# for a species merge into one YOLO class — e.g. "Northern Cardinal"
+# includes Adult Male, Female, Juvenile, etc.
+#
+# Find exact NABirds strings:
+#   python training/scripts/list_nabirds_classes.py ~/data/nabirds
+#   python training/scripts/list_nabirds_classes.py ~/data/nabirds --grep "Cardinal"
+#
+# Brooklyn / PS 20 feeder & garden visitors (edit as needed):
+Northern Cardinal
+House Finch
+House Sparrow
+American Goldfinch
+Blue Jay
+Mourning Dove
+European Starling
+Downy Woodpecker
+White-breasted Nuthatch
+Black-capped Chickadee
+Red-winged Blackbird
+Song Sparrow
+Common Grackle
+Dark-eyed Junco

@@ -49,6 +49,14 @@ class ServerConfig(BaseModel):
     public_streams: bool = False
 
 
+class CameraWildlifeConfig(BaseModel):
+    # Optional per-camera model override (.hef on Pi).
+    model_path: str = ""
+    labels_path: str = ""
+    # Empty = accept all classes from the model on this camera.
+    classes: list[str] = Field(default_factory=list)
+
+
 class CameraConfig(BaseModel):
     resolution: tuple[int, int] = (1280, 720)
     # picamera2 sensor controls passed straight through (e.g. AwbMode,
@@ -57,6 +65,7 @@ class CameraConfig(BaseModel):
     # Optional human-friendly label shown on the public /camN page header
     # (e.g. "Pasture View"). Falls back to "Camera N" when empty.
     name: str = ""
+    wildlife: CameraWildlifeConfig = Field(default_factory=lambda: CameraWildlifeConfig())
 
     @field_validator("resolution", mode="before")
     @classmethod
@@ -74,6 +83,10 @@ class StreamConfig(BaseModel):
     framerate: float = Field(default=1.0, ge=0.25, le=15.0)
     # JPEG quality 1-95. Higher = bigger file. 75 is a reasonable balance.
     jpeg_quality: int = Field(default=75, ge=1, le=95)
+    # Close each MJPEG connection after this many seconds. Prevents a
+    # forgotten browser tab from holding a stream (and LTE bandwidth)
+    # indefinitely. 0 disables the limit.
+    max_duration_seconds: int = Field(default=3600, ge=0)
 
 
 class PowerConfig(BaseModel):
@@ -177,6 +190,34 @@ class NetworkConfig(BaseModel):
     modem_probe_timeout_seconds: int = Field(default=5, ge=1)
 
 
+class WildlifeSyncConfig(BaseModel):
+    enabled: bool = False
+    wordpress_url: str = "https://ps20.hedgework.net"
+    wordpress_user: str = ""
+    wordpress_app_password: str = ""
+    batch_size: int = Field(default=5, ge=1)
+    max_uploads_per_hour: int = Field(default=30, ge=1)
+    resize_width: int = Field(default=800, ge=320)
+
+
+class WildlifeConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = "/var/lib/streamer/models/wildlife_v1.hef"
+    labels_path: str = "/var/lib/streamer/models/wildlife_v1.json"
+    confidence_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    cooldown_seconds: float = Field(default=30.0, ge=0.0)
+    inference_size: tuple[int, int] = (640, 640)
+    store_annotated: bool = True
+    sync: WildlifeSyncConfig = Field(default_factory=WildlifeSyncConfig)
+
+    @field_validator("inference_size", mode="before")
+    @classmethod
+    def _coerce_inference_size(cls, v: Any) -> tuple[int, int]:
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            return (int(v[0]), int(v[1]))
+        raise ValueError("inference_size must be [width, height]")
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     camera0: CameraConfig = Field(default_factory=CameraConfig)
@@ -186,6 +227,7 @@ class AppConfig(BaseModel):
     location: LocationConfig = Field(default_factory=LocationConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
+    wildlife: WildlifeConfig = Field(default_factory=WildlifeConfig)
 
     @classmethod
     def from_toml(cls, path: Path) -> AppConfig:

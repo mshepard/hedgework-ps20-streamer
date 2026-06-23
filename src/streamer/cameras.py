@@ -41,8 +41,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import numpy as np
@@ -51,8 +52,170 @@ if TYPE_CHECKING:
     from picamera2 import Picamera2  # imported lazily at runtime
 
 from streamer.config import AppConfig, CameraConfig, StreamConfig
+from streamer.mjpeg import encode_jpeg
 
 logger = logging.getLogger("streamer.cameras")
+
+# Capture timeouts for the shared per-camera publisher loop (same
+# rationale as server.py's stream handler).
+FIRST_FRAME_TIMEOUT_SECONDS = 15.0
+CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
+CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
+
+
+class PublishedFrame:
+    """One captured frame plus a pre-encoded JPEG for MJPEG subscribers."""
+
+    __slots__ = ("generation", "rgb", "jpeg", "captured_at")
+
+    def __init__(
+        self,
+        generation: int,
+        rgb: np.ndarray,
+        jpeg: bytes,
+        captured_at: float,
+    ) -> None:
+        self.generation = generation
+        self.rgb = rgb
+        self.jpeg = jpeg
+        self.captured_at = captured_at
+
+
+class FramePublisher:
+    """Single capture-and-encode loop per camera; fans out to subscribers.
+
+    MJPEG stream handlers and the wildlife detector both await
+    ``wait_frame()`` instead of calling ``Camera.capture()`` directly,
+    so N concurrent viewers receive the full configured framerate
+    without N-fold camera work.
+    """
+
+    def __init__(
+        self,
+        camera: Camera,
+        framerate: float,
+        jpeg_quality: int,
+    ) -> None:
+        self._camera = camera
+        self._framerate = framerate
+        self._jpeg_quality = jpeg_quality
+        self._latest: PublishedFrame | None = None
+        self._frame_ready = asyncio.Event()
+        self._running = False
+        self._task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def camera_num(self) -> int:
+        return self._camera.camera_num
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    async def start(self) -> None:
+        async with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._task = asyncio.create_task(
+                self._capture_loop(),
+                name=f"cam{self._camera.camera_num}-publisher",
+            )
+
+    async def stop(self) -> None:
+        async with self._lock:
+            if not self._running:
+                return
+            self._running = False
+            if self._task is not None:
+                self._task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._task
+                self._task = None
+
+    async def wait_frame(self, after_generation: int = -1) -> PublishedFrame:
+        """Block until a frame newer than ``after_generation`` is ready."""
+
+        while True:
+            latest = self._latest
+            if latest is not None and latest.generation > after_generation:
+                return latest
+            self._frame_ready.clear()
+            await self._frame_ready.wait()
+
+    async def _capture_loop(self) -> None:
+        cam = self._camera
+        log = logger.getChild(f"publisher.cam{cam.camera_num}")
+        target_interval = 1.0 / max(self._framerate, 0.01)
+        steady_timeout = max(
+            CAPTURE_TIMEOUT_FLOOR_SECONDS,
+            CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER * target_interval,
+        )
+        loop = asyncio.get_running_loop()
+        generation = 0
+        acquired = False
+        frames_since_acquire = 0
+
+        try:
+            while self._running:
+                if not acquired:
+                    try:
+                        await cam.acquire()
+                    except Exception:
+                        log.exception("Publisher acquire failed")
+                        await asyncio.sleep(target_interval)
+                        continue
+                    acquired = True
+                    frames_since_acquire = 0
+
+                cycle_start = time.monotonic()
+                this_timeout = (
+                    FIRST_FRAME_TIMEOUT_SECONDS
+                    if frames_since_acquire == 0
+                    else steady_timeout
+                )
+                try:
+                    rgb = await asyncio.wait_for(
+                        cam.capture(), timeout=this_timeout
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    log.warning(
+                        "Publisher capture timeout on camera %d; recovering",
+                        cam.camera_num,
+                    )
+                    cam.mark_broken()
+                    await cam.release()
+                    acquired = False
+                    await asyncio.sleep(target_interval)
+                    continue
+
+                frames_since_acquire += 1
+                jpeg = await loop.run_in_executor(
+                    None, encode_jpeg, rgb, self._jpeg_quality
+                )
+                generation += 1
+                self._latest = PublishedFrame(
+                    generation, rgb, jpeg, time.time()
+                )
+                self._frame_ready.set()
+
+                elapsed = time.monotonic() - cycle_start
+                remaining = target_interval - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if acquired:
+                try:
+                    await cam.release()
+                except Exception:
+                    log.exception(
+                        "Publisher release failed for camera %d",
+                        cam.camera_num,
+                    )
+            log.info("Publisher stopped for camera %d", cam.camera_num)
 
 
 class Camera:
@@ -319,11 +482,27 @@ class Camera:
 class CameraManager:
     """Holds the configured cameras keyed by ``camera_num``."""
 
-    def __init__(self, cameras: dict[int, Camera]) -> None:
+    def __init__(
+        self,
+        cameras: dict[int, Camera],
+        publishers: dict[int, FramePublisher] | None = None,
+    ) -> None:
         self._cameras = cameras
+        self._publishers = publishers or {}
 
     def get(self, camera_num: int) -> Camera:
         return self._cameras[camera_num]
+
+    def publisher(self, camera_num: int) -> FramePublisher:
+        return self._publishers[camera_num]
+
+    async def start_publishers(self) -> None:
+        for pub in self._publishers.values():
+            await pub.start()
+
+    async def stop_publishers(self) -> None:
+        for pub in self._publishers.values():
+            await pub.stop()
 
     def attach_failure_callback(
         self, cb: Callable[[int, int], Awaitable[None]]
@@ -408,4 +587,12 @@ def build_manager(config: AppConfig) -> CameraManager:
             1, config.camera1, config.stream, config.power.idle_grace_seconds
         ),
     }
-    return CameraManager(cameras)
+    publishers = {
+        num: FramePublisher(
+            cam,
+            framerate=config.stream.framerate,
+            jpeg_quality=config.stream.jpeg_quality,
+        )
+        for num, cam in cameras.items()
+    }
+    return CameraManager(cameras, publishers)

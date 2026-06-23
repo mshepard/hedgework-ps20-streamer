@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HEDGEWORK @ PS 20 · Camera embed</title>
+    <link rel="icon" type="image/png" href="/static/media/Hedge-icon.png" />
+  </head>
+  <body>
+    <div class="embed-doc">
+      <h1>Single-camera embed</h1>
+      <p class="lede">
+        One widget per camera page — snapshot and fullscreen controls,
+        sleep-schedule awareness, and overnight “asleep until …” cards
+        when the Pi powers down. Use a separate embed on each WordPress
+        page (cam0 page, cam1 page, etc.).
+      </p>
+
+      <h2>Live preview</h2>
+      <p class="lede">
+        Camera number is inferred from the URL when you open
+        <code>/embed/cam0</code> or <code>/embed/cam1</code>. On this
+        generic page, set <code>data-camera</code> on the mount
+        <code>&lt;div&gt;</code> below.
+      </p>
+
+      <div
+        class="hedgework-cam-embed-single"
+        data-pi-url=""
+        data-poll-interval-ms="20000"
+      ></div>
+
+      <div class="note">
+        <strong>Legacy dual-tile embed:</strong> the older two-camera
+        snippet at <a href="/embed">/embed</a> still works but is no
+        longer recommended for new pages.
+      </div>
+
+      <h2>WordPress (recommended)</h2>
+      <p class="lede">
+        Copy the <code>wordpress/</code> folder from this repo into
+        <code>wp-content/plugins/hedgework-cam-embed/</code> and activate
+        the plugin. Then add a shortcode to each camera page:
+      </p>
+      <pre>[hedgework_cam camera="0" pi_url="https://your-pi.tailfoo.ts.net"]</pre>
+      <pre>[hedgework_cam camera="1" pi_url="https://your-pi.tailfoo.ts.net"]</pre>
+      <p class="lede">
+        The plugin loads <code>embed-cam.css</code> and
+        <code>embed-cam.js</code> from its own directory — no inline
+        script in your page, so WordPress entity-encoding is not an
+        issue.
+      </p>
+
+      <h2>Custom HTML (upload CSS + JS)</h2>
+      <p class="lede">
+        Upload <code>embed-cam.css</code> and <code>embed-cam.js</code>
+        (from <code>src/streamer/webui/</code> or
+        <code>/static/</code> on the Pi) to your WordPress media
+        library or theme. Paste into a Custom HTML block on each camera
+        page — edit paths and <code>data-camera</code> per page:
+      </p>
+      <pre>&lt;link rel="stylesheet" href="/wp-content/uploads/embed-cam.css" /&gt;
+&lt;div
+  class="hedgework-cam-embed-single"
+  data-pi-url="https://your-pi.tailfoo.ts.net"
+  data-camera="0"
+  data-poll-interval-ms="20000"
+&gt;&lt;/div&gt;
+&lt;script src="/wp-content/uploads/embed-cam.js"&gt;&lt;/script&gt;</pre>
+
+      <h2>Setup</h2>
+      <ol>
+        <li>
+          Set <code>[server] public_streams = true</code> in
+          <code>streamer.toml</code> and restart the service.
+        </li>
+        <li>
+          Confirm the Pi is reachable on a public URL (Tailscale Funnel,
+          Cloudflare Tunnel, etc.).
+        </li>
+        <li>
+          One embed per camera page — set <code>data-camera="0"</code> or
+          <code>"1"</code> (or use the shortcode <code>camera</code>
+          attribute).
+        </li>
+        <li>
+          Strip trailing slashes from <code>data-pi-url</code> / shortcode
+          <code>pi_url</code> (the JS tolerates them, but cleaner URLs
+          help).
+        </li>
+      </ol>
+
+      <h2>Controls</h2>
+      <ul>
+        <li>
+          <strong>Snapshot</strong> — saves the current MJPEG frame as a
+          JPEG download (enabled once the first frame arrives).
+        </li>
+        <li>
+          <strong>Fullscreen</strong> — expands the video stage to fill
+          the screen.
+        </li>
+        <li>
+          <strong>Watch live</strong> — appears after a stream ends (server
+          time limit, sleep, or disconnect). Status polls do not reopen a
+          forgotten tab; the visitor must click to resume.
+        </li>
+      </ul>
+
+      <h2>Sleep behaviour</h2>
+      <ul>
+        <li>
+          Polls <code>/api/public/status</code> every 20 s (configurable
+          via <code>data-poll-interval-ms</code>).
+        </li>
+        <li>
+          <code>ENTERING_SLEEP</code> — yellow banner with countdown;
+          stream stays live.
+        </li>
+        <li>
+          <code>ASLEEP</code> or unreachable Pi overnight — asleep card
+          with next wake time (uses <code>localStorage</code> schedule
+          cache when the Pi is powered off).
+        </li>
+      </ul>
+    </div>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lexend+Tera:wght@400;500;700&display=swap"
+    />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Inter", system-ui, sans-serif;
+        background: #fafbfc;
+        color: #15312b;
+        line-height: 1.55;
+      }
+      .embed-doc {
+        max-width: 980px;
+        margin: 0 auto 48px auto;
+      }
+      .embed-doc h1 {
+        font-family: "Lexend Tera", "Inter", system-ui, sans-serif;
+        font-weight: 500;
+        font-size: 22px;
+        margin: 0 0 8px 0;
+      }
+      .embed-doc .lede {
+        color: rgba(21, 49, 43, 0.7);
+        margin: 0 0 24px 0;
+      }
+      .embed-doc h2 {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(21, 49, 43, 0.6);
+        margin: 32px 0 12px 0;
+      }
+      .embed-doc pre {
+        background: #15312b;
+        color: #f5f1e8;
+        padding: 16px 18px;
+        border-radius: 6px;
+        overflow-x: auto;
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .embed-doc .note {
+        background: #fff;
+        border-left: 3px solid #ff8c44;
+        padding: 12px 16px;
+        margin: 24px 0;
+        border-radius: 0 4px 4px 0;
+        font-size: 14px;
+      }
+      .embed-doc a {
+        color: #15312b;
+      }
+    </style>
+    <link rel="stylesheet" href="/static/embed-cam.css" />
+    <script src="/static/embed-cam.js"></script>
+  </body>
+</html>

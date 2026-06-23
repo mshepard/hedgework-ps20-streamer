@@ -16,6 +16,7 @@ from streamer.config import AppConfig, load_config
 from streamer.modem import ModemProbe
 from streamer.power import PowerManager
 from streamer.server import StreamerServer
+from streamer.wildlife import WildlifeManager
 
 
 # Where the sleep_enabled override + (future) power state lives.
@@ -241,8 +242,15 @@ def main(argv: list[str] | None = None) -> int:
     # PowerManager, which may self power-cycle the Pi as a last resort.
     cameras.attach_failure_callback(power_manager.handle_camera_failure)
     modem_probe = ModemProbe(config.network)
+    wildlife_manager = WildlifeManager(
+        config, cameras, state_dir=state_dir, power=power_manager, modem=modem_probe
+    )
     server = StreamerServer(
-        config, cameras, power=power_manager, modem=modem_probe
+        config,
+        cameras,
+        power=power_manager,
+        modem=modem_probe,
+        wildlife=wildlife_manager,
     )
     app = server.build()
 
@@ -295,19 +303,19 @@ def main(argv: list[str] | None = None) -> int:
         mode = "hold" if config.power.keep_cameras_warm else "touch"
         log.info("Warming up camera pipelines (concurrent, mode=%s)", mode)
         held = await _warmup_cameras(cameras, config, log)
-        if config.power.keep_cameras_warm:
-            log.info(
-                "Warmup complete; %d camera(s) held warm; "
-                "handing refcounts to power manager",
-                len(held),
-            )
-        else:
-            log.info(
-                "Warmup complete; cameras released "
-                "(idle stop in %ds)",
-                config.power.idle_grace_seconds,
-            )
-        await power_manager.apply_initial_hold(held)
+        # Frame publishers own the warm camera pipeline during AWAKE.
+        # Release any boot warmup holds so we don't double-acquire.
+        for cam in held:
+            try:
+                await cam.release()
+            except Exception:
+                log.exception(
+                    "Release after warmup failed for camera %d",
+                    cam.camera_num,
+                )
+        await power_manager.apply_initial_hold([])
+        await cameras.start_publishers()
+        await wildlife_manager.start()
         await power_manager.start()
         await modem_probe.start()
 
@@ -315,8 +323,10 @@ def main(argv: list[str] | None = None) -> int:
         # Best-effort stop the periodic tasks before tearing down
         # cameras so they don't try to re-acquire a closed pipeline
         # mid-shutdown.
+        await wildlife_manager.stop()
         await power_manager.stop()
         await modem_probe.stop()
+        await cameras.stop_publishers()
         await cameras.shutdown()
 
     app.on_startup.append(_warmup_pipelines)
