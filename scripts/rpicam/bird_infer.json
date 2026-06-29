@@ -1,0 +1,25 @@
+{
+  "rpicam-apps": {
+    "lores": {
+      "width": 640,
+      "height": 640,
+      "format": "rgb"
+    }
+  },
+  "hailo_yolo_inference": {
+    "hef_file_8L": "/var/lib/streamer/models/bird_v1.hef",
+    "hef_file_8": "/var/lib/streamer/models/bird_v1.hef",
+    "hailopp_config_file": "/var/lib/streamer/models/bird_v1.json",
+    "max_detections": 20,
+    "threshold": 0.55,
+    "temporal_filter": {
+      "tolerance": 0.1,
+      "factor": 0.75,
+      "visible_frames": 6,
+      "hidden_frames": 3
+    }
+  },
+  "object_detect_draw_cv": {
+    "line_thickness": 2
+  }
+}

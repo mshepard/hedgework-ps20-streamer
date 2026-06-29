@@ -62,10 +62,11 @@
     ui.fullscreenBtn.addEventListener("click", () => toggleFullscreen(ui.stage));
 
     ui.img.addEventListener("error", () => {
-      if (state.live || state.watchRequested) {
-        state.watchRequested = false;
-        applyPaused(state, ui);
+      if (!state.live) {
+        return;
       }
+      state.watchRequested = false;
+      applyPaused(state, ui);
     });
     ui.img.addEventListener("load", () => {
       ui.msg.classList.add("hidden");
@@ -156,7 +157,7 @@
   async function poll(state, ui) {
     const abort =
       "AbortSignal" in window && AbortSignal.timeout
-        ? AbortSignal.timeout(8000)
+        ? AbortSignal.timeout(15000)
         : undefined;
     try {
       const resp = await fetch(`${state.piUrl}/api/public/status`, {
@@ -197,13 +198,23 @@
     if (state.error) {
       if (inferredWake) {
         applyAsleep(state, ui, { at: inferredWake });
-      } else {
-        applyOffline(state, ui);
+        ui.foot.textContent = "";
+        ui.snapshotBtn.disabled = true;
+        return;
       }
-      ui.foot.textContent =
-        "Live feed currently unreachable. Will retry automatically.";
-      ui.snapshotBtn.disabled = true;
-      return;
+      // A failed /api/public/status poll does not mean the MJPEG
+      // stream is dead — tearing it down here caused visible
+      // drop/reconnect cycles (especially on a busy Pi or slow LTE).
+      if (!state.live) {
+        applyOffline(state, ui);
+        ui.foot.textContent =
+          "Live feed currently unreachable. Will retry automatically.";
+        ui.snapshotBtn.disabled = true;
+        return;
+      }
+      ui.foot.textContent = "Status check failed; live stream continues.";
+    } else {
+      ui.foot.textContent = "";
     }
 
     if (mode === "ASLEEP") {

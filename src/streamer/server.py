@@ -552,7 +552,7 @@ class StreamerServer:
         last_generation = -1
         max_duration = self.config.stream.max_duration_seconds
         stream_start = time.monotonic()
-        timed_out = False
+        close_reason = "ended"
 
         try:
             while True:
@@ -560,7 +560,7 @@ class StreamerServer:
                     max_duration > 0
                     and time.monotonic() - stream_start >= max_duration
                 ):
-                    timed_out = True
+                    close_reason = f"max_duration({max_duration}s)"
                     log.info(
                         "Stream max duration (%ds) reached; closing",
                         max_duration,
@@ -569,8 +569,10 @@ class StreamerServer:
                 try:
                     frame = await publisher.wait_frame(last_generation)
                 except asyncio.CancelledError:
+                    close_reason = "cancelled"
                     raise
                 except Exception:
+                    close_reason = "publisher_error"
                     log.exception("Publisher wait failed; closing stream")
                     break
 
@@ -578,8 +580,10 @@ class StreamerServer:
                 try:
                     await resp.write(part(frame.jpeg))
                 except (ConnectionResetError, asyncio.CancelledError):
+                    close_reason = "client_disconnect"
                     raise
                 except Exception:
+                    close_reason = "write_error"
                     log.exception("Write failed; closing stream")
                     break
                 frames_written += 1
@@ -587,15 +591,18 @@ class StreamerServer:
             # Normal: client disconnected, or server shutdown.
             pass
         except Exception:
+            close_reason = "crash"
             log.exception("Stream loop crashed")
         finally:
             if task is not None:
                 self._active_streams.discard(task)
+            elapsed = time.monotonic() - stream_start
             log.info(
-                "Stream closed for %s after %d frames%s",
+                "Stream closed for %s after %d frames in %.1fs (%s)",
                 peer,
                 frames_written,
-                " (max duration)" if timed_out else "",
+                elapsed,
+                close_reason,
             )
             try:
                 await resp.write_eof()

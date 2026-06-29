@@ -153,7 +153,22 @@ before enabling it.
 ### Wedged-camera playbook
 
 When a camera stops streaming in the field, work through this on
-the Pi (SSH in over Tailscale):
+the Pi (SSH in over Tailscale).
+
+Quick daily glance (install once from the repo):
+
+```bash
+cp ~/Streamer/scripts/check-cam.sh ~/check-cam.sh   # after git pull
+chmod +x ~/check-cam.sh
+~/check-cam.sh
+```
+
+Healthy output: **0 wedge clusters** on both cams, low
+`transient broken events`, no **ALERTS** block. The script counts
+both legacy (`Capture timeout on camera N`) and FramePublisher
+(`Publisher capture timeout`, `Publisher acquire failed`,
+`Camera frontend has timed out`) log lines so a hard wedge cannot
+hide behind “0 clusters”.
 
 ```bash
 # 1. Confirm the wedge signature: recovery attempts looping with
