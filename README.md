@@ -142,13 +142,12 @@ Guardrails:
 Current cycle count is visible under `power.recovery` in
 `GET /api/status`.
 
-Validation status: the trigger logic and the self-power-off /
-self-wake mechanics are proven, but the *cure* is not yet — every
-confirmed wedge so far was cleared by a physical unplug, and the
-rtcwake path (electrically equivalent, ~2 min rails-down) has not
-yet been demonstrated against a live wedge. The feature therefore
-ships disabled. Run the playbook below on the first field wedge
-before enabling it.
+Validation status: physical V102 unplug cures a wedged SerDes link;
+the `rtcwake + poweroff` path is electrically equivalent (~2 min
+rails-down with `POWER_OFF_ON_HALT=1`). Self-cycle recovery is
+**enabled by default** in `config/streamer.toml` so a confirmed wedge
+triggers a power cut before FD exhaustion can block sunset sleep.
+Disable with `recovery_power_cycle = false` on bench Pis.
 
 ### Wedged-camera playbook
 
@@ -196,13 +195,12 @@ curl -sS --max-time 25 -o /dev/null \
 Interpreting step 4:
 
 - **Streams again** → the rtcwake power cycle cures a real wedge.
-  Enable the automated version (`recovery_power_cycle = true` in
-  `/etc/streamer/streamer.toml`, then
-  `sudo systemctl restart streamer`) so future wedges self-heal
-  without a site visit.
+  Automated recovery is enabled by default (`recovery_power_cycle =
+  true` in `/etc/streamer/streamer.toml`); confirm the setting after
+  `git pull` and `sudo systemctl restart streamer`.
 - **Still 0 bytes** → only a physical unplug re-trains this link;
-  do not enable the automated recovery (it would burn its daily
-  cycle budget for nothing). The fix is at the hardware layer:
+  set `recovery_power_cycle = false` so the service does not burn its
+  daily cycle budget for nothing. The fix is at the hardware layer:
   reseat/replace the flex cables and extender pair on the affected
   camera (a marginal FFC contact has been the root cause before).
 
@@ -377,7 +375,7 @@ dry_run            = false   # when true, the state machine still
                              # /stream/* returns 503 SLEEPING.
 
 # Self power-cycle recovery (see "Self power-cycle recovery" above).
-recovery_power_cycle        = false  # opt-in; requires POWER_OFF_ON_HALT=1
+recovery_power_cycle        = true   # opt-in; requires POWER_OFF_ON_HALT=1
 recovery_failure_threshold  = 5      # consecutive failed recoveries (~16 s apart)
 recovery_max_cycles_per_day = 3      # hard daily cap, persisted across cycles
 recovery_boot_grace_minutes = 10     # no self-cycle this soon after start

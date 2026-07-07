@@ -22,9 +22,10 @@ Reliability design:
   the ``idle_grace_seconds`` defer-stop lets fast reconnects skip the
   ~150 ms picamera2 init.
 * ``mark_broken()`` flags a wedged instance from the outside (e.g. a
-  capture timeout in the MJPEG handler); the next ``acquire()`` rebuilds
-  the picamera2 instance from scratch, replacing the per-camera executor
-  so the next operation actually has a thread to run on.
+  capture timeout in the publisher loop). It is a no-op while the
+  camera is already broken — the next ``acquire()`` owns recovery.
+  The first call per wedge swaps the per-camera executor so recovery
+  has a free thread even though the previous one is stuck in libcamera.
 * The sensor's ``FrameDurationLimits`` is driven by the stream framerate,
   so producer and consumer run at the same cadence. That removes the
   slow-consumer buffer-pool stall pattern entirely. ``buffer_count=2``
@@ -61,6 +62,21 @@ logger = logging.getLogger("streamer.cameras")
 FIRST_FRAME_TIMEOUT_SECONDS = 15.0
 CAPTURE_TIMEOUT_FLOOR_SECONDS = 2.0
 CAPTURE_TIMEOUT_INTERVAL_MULTIPLIER = 3.0
+
+# Minimum gap between ``acquire()`` recovery attempts while a camera
+# stays ``_broken``. Grows with ``consecutive_failures`` so a wedged
+# link does not spin at 1 Hz opening Picamera2 instances (and leaking
+# FDs) for hours.
+RECOVERY_BACKOFF_BASE_SECONDS = 5.0
+RECOVERY_BACKOFF_CAP_SECONDS = 60.0
+
+
+class RecoveryBackoff(Exception):
+    """``acquire()`` refused a back-to-back recovery attempt."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+        super().__init__(delay_seconds)
 
 
 class PublishedFrame:
@@ -162,9 +178,14 @@ class FramePublisher:
                 if not acquired:
                     try:
                         await cam.acquire()
+                    except RecoveryBackoff as exc:
+                        await asyncio.sleep(exc.delay_seconds)
+                        continue
                     except Exception:
                         log.exception("Publisher acquire failed")
-                        await asyncio.sleep(target_interval)
+                        await asyncio.sleep(
+                            cam._publisher_backoff_seconds(target_interval)
+                        )
                         continue
                     acquired = True
                     frames_since_acquire = 0
@@ -187,7 +208,9 @@ class FramePublisher:
                     cam.mark_broken()
                     await cam.release()
                     acquired = False
-                    await asyncio.sleep(target_interval)
+                    await asyncio.sleep(
+                        cam._publisher_backoff_seconds(target_interval)
+                    )
                     continue
 
                 frames_since_acquire += 1
@@ -250,9 +273,12 @@ class Camera:
         # Dedicated single-thread executor for blocking picamera2 calls.
         # Isolates wedged libcamera operations from the default thread
         # pool (HTTP body writes, JPEG encode, the other camera).
-        # Replaced wholesale by ``mark_broken()`` so the next recovery
-        # has a free thread even though the previous one is stuck.
+        # Replaced by the first ``mark_broken()`` in a wedge episode so
+        # recovery has a free thread even though the previous one is
+        # stuck. Further ``mark_broken()`` calls are a no-op.
         self._picam2_executor: ThreadPoolExecutor = self._make_executor()
+        # Monotonic timestamp of the last ``_recover_blocking`` attempt.
+        self._last_recovery_attempt: float = 0.0
         # Consecutive ``mark_broken()`` calls without an intervening
         # successful capture. Feeds the PowerManager's self power-cycle
         # trigger: a count that keeps climbing means the in-process
@@ -283,14 +309,16 @@ class Camera:
         """Signal that this camera's capture pipeline is wedged.
 
         The next ``acquire()`` rebuilds the picamera2 instance and
-        rebinds ``_device_lock``. The executor is swapped here so the
-        recovery actually has a thread to run on — the previous worker
-        is presumed permanently stuck inside libcamera.
+        rebinds ``_device_lock``. The executor is swapped on the first
+        call in a wedge episode so recovery has a thread to run on —
+        the previous worker is presumed stuck inside libcamera.
 
-        Idempotent (safe to call multiple times) but each call leaks an
-        executor + thread, so callers should invoke it at most once per
-        detected wedge.
+        Idempotent: while ``_broken`` is already set, this is a no-op.
+        Recovery backoff and the next ``acquire()`` own further work.
         """
+
+        if self._broken:
+            return
 
         self._broken = True
         self.consecutive_failures += 1
@@ -314,6 +342,28 @@ class Camera:
                     name=f"cam{self.camera_num}-failure-cb",
                 )
 
+    def _recovery_backoff_seconds(self) -> float:
+        """Backoff before retrying ``_recover_blocking`` after failures."""
+
+        if self.consecutive_failures <= 1:
+            return 0.0
+        exponent = min(self.consecutive_failures - 2, 3)
+        return min(
+            RECOVERY_BACKOFF_CAP_SECONDS,
+            RECOVERY_BACKOFF_BASE_SECONDS * (2**exponent),
+        )
+
+    def _publisher_backoff_seconds(self, target_interval: float) -> float:
+        """Publisher sleep after a failed capture/recover cycle."""
+
+        if self.consecutive_failures < 3:
+            return target_interval
+        exponent = min(self.consecutive_failures - 2, 5)
+        return min(
+            RECOVERY_BACKOFF_CAP_SECONDS,
+            target_interval * (2**exponent),
+        )
+
     async def acquire(self) -> None:
         async with self._refcount_lock:
             self._refcount += 1
@@ -322,10 +372,19 @@ class Camera:
                 self._stop_task = None
             try:
                 if self._broken:
+                    backoff = self._recovery_backoff_seconds()
+                    if backoff > 0.0:
+                        elapsed = time.monotonic() - self._last_recovery_attempt
+                        remaining = backoff - elapsed
+                        if remaining > 0.0:
+                            self._refcount -= 1
+                            raise RecoveryBackoff(remaining)
+
                     logger.warning(
                         "Camera %d marked broken; abandoning instance and reopening",
                         self.camera_num,
                     )
+                    self._last_recovery_attempt = time.monotonic()
                     loop = asyncio.get_running_loop()
                     await loop.run_in_executor(
                         self._picam2_executor, self._recover_blocking
@@ -337,6 +396,18 @@ class Camera:
                         self._picam2_executor, self._start_blocking
                     )
             except Exception:
+                # Recover failed with ``_broken`` still set — count it so
+                # backoff escalates and the power manager can intervene.
+                if self._broken:
+                    self.consecutive_failures += 1
+                    if self._failure_cb is not None:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(
+                            self._failure_cb(
+                                self.camera_num, self.consecutive_failures
+                            ),
+                            name=f"cam{self.camera_num}-failure-cb",
+                        )
                 # Don't leak a refcount if start/recover failed; the
                 # next acquire will retry from a clean slate.
                 self._refcount -= 1

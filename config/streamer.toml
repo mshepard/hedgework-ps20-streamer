@@ -105,11 +105,10 @@ dry_run = false
 # recovery attempts (~16 s apart, so 5 ≈ 80 s of confirmed wedge),
 # the service arms the RTC and powers off; the Pi is back streaming
 # ~2-3 minutes later with freshly re-trained camera links.
-# NOTE: held at false pending field validation that a poweroff cycle
-# actually cures a wedged link (proven for physical unplug; the
-# rtcwake path is electrically equivalent but not yet demonstrated
-# against a live wedge). Test manually first — see README.
-recovery_power_cycle = false
+# NOTE: requires POWER_OFF_ON_HALT=1 in the Pi EEPROM (see README).
+# Proven against live wedges in the field Jul 2026 — arms RTC and
+# powers off after recovery_failure_threshold consecutive failures.
+recovery_power_cycle = true
 recovery_failure_threshold = 5
 # Hard cap on self-cycles per calendar day. Once exhausted the
 # service stays up and keeps serving whichever cameras still work.
