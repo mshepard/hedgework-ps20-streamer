@@ -15,12 +15,13 @@ import json
 import signal
 import sys
 import time
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,9 +109,29 @@ def _parse_yolo_outputs(
     if not outputs:
         return []
     tensor = next(iter(outputs.values()))
+    # Some HEFs expose outputs as Python lists (or lists-of-arrays)
+    # instead of a single ndarray. Normalize to an ndarray early.
+    tensor = np.asarray(tensor)
+
+    # Typical YOLOv8 inference layouts (examples):
+    #   (1, N, 4+nc)
+    #   (1, 4+nc, N)
     if tensor.ndim == 3 and tensor.shape[1] < tensor.shape[2]:
         tensor = np.transpose(tensor, (0, 2, 1))
-    preds = tensor[0]
+
+    if tensor.ndim == 3:
+        # (1, N, 4+nc) -> (N, 4+nc)
+        preds = tensor[0]
+    elif tensor.ndim == 2:
+        # (N, 4+nc)
+        preds = tensor
+    else:
+        # Best-effort fallback: collapse everything except the last dim
+        # and treat it as (N, 4+nc).
+        if tensor.ndim == 0:
+            return []
+        preds = tensor.reshape(-1, tensor.shape[-1])
+
     detections: list[Detection] = []
     for row in preds:
         if row.shape[0] < 5:
@@ -295,6 +316,29 @@ def parse_args() -> argparse.Namespace:
         default=(640, 640),
         metavar=("W", "H"),
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without a GUI (no Tkinter); save side-by-side frames to disk.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("./dual_preview_out"),
+        help="Where to save annotated frames in --headless mode.",
+    )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=10,
+        help="In --headless mode, save one frame every N iterations.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help="In headless mode, stop after N frames (0 = run until Ctrl+C).",
+    )
     return parser.parse_args()
 
 
@@ -328,30 +372,89 @@ def main() -> int:
     cam0 = _open_camera(0, args.width, args.height, args.fps)
     cam1 = _open_camera(1, args.width, args.height, args.fps)
 
+    headless = args.headless or not bool(os.environ.get("DISPLAY"))
+
+    def shutdown(_signum: int | None = None, _frame: Any | None = None) -> None:
+        nonlocal running
+        running = False
+
+    running = True
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    target_interval = 1.0 / max(args.fps, 0.1)
+
+    if headless:
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        print(
+            "Running headless (no $DISPLAY). Saving annotated side-by-side frames to:",
+            args.out_dir,
+        )
+
+        i = 0
+        try:
+            while running:
+                cycle_start = time.monotonic()
+                frame0 = cam0.capture_array()
+                frame1 = cam1.capture_array()
+
+                dets0 = model0.detect(frame0, args.threshold)
+                dets1 = model1.detect(frame1, args.threshold)
+
+                left = annotate_frame(frame0, dets0, "Camera 0")
+                right = annotate_frame(frame1, dets1, "Camera 1")
+                combined = Image.new("RGB", (left.width + right.width, left.height))
+                combined.paste(left, (0, 0))
+                combined.paste(right, (left.width, 0))
+
+                if args.save_every > 0 and (i % args.save_every == 0):
+                    ts = time.strftime("%Y%m%d-%H%M%S")
+                    out_path = args.out_dir / f"frame-{i:06d}-{ts}.jpg"
+                    combined.save(out_path, format="JPEG", quality=85)
+
+                # Keep stdout reasonably quiet; print only if we got detections.
+                if dets0 or dets1:
+                    top0 = max(dets0, key=lambda d: d.confidence) if dets0 else None
+                    top1 = max(dets1, key=lambda d: d.confidence) if dets1 else None
+                    msg = []
+                    if top0 is not None:
+                        msg.append(f"cam0={top0.display_name}:{top0.confidence:.2f}")
+                    if top1 is not None:
+                        msg.append(f"cam1={top1.display_name}:{top1.confidence:.2f}")
+                    print("detections:", " ".join(msg))
+
+                i += 1
+                if args.max_frames and i >= args.max_frames:
+                    break
+
+                elapsed = time.monotonic() - cycle_start
+                remaining = target_interval - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+        finally:
+            cam0.stop()
+            cam1.stop()
+            cam0.close()
+            cam1.close()
+        return 0
+
+    # GUI mode
     import tkinter as tk
+    from PIL import ImageTk
 
     root = tk.Tk()
     root.title("Dual Hailo Preview")
     label = tk.Label(root)
     label.pack()
     photo: ImageTk.PhotoImage | None = None
-    running = True
-
-    def shutdown(_signum: int | None = None, _frame: Any | None = None) -> None:
-        nonlocal running
-        running = False
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-    root.protocol("WM_DELETE_WINDOW", shutdown)
-
-    target_interval = 1.0 / max(args.fps, 0.1)
-    print("Preview running. Close the window or press Ctrl+C to quit.")
 
     def tick() -> None:
         nonlocal photo
         if not running:
-            root.destroy()
+            try:
+                root.destroy()
+            except Exception:
+                pass
             return
 
         cycle_start = time.monotonic()
@@ -375,6 +478,7 @@ def main() -> int:
         delay_ms = max(1, int((target_interval - elapsed) * 1000))
         root.after(delay_ms, tick)
 
+    root.protocol("WM_DELETE_WINDOW", shutdown)
     root.after(0, tick)
     try:
         root.mainloop()

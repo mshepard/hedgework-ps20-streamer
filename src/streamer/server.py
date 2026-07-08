@@ -306,6 +306,7 @@ class StreamerServer:
             "dry_run": False,
             "schedule_enabled": False,
             "next_event": None,
+            "recovery": None,
         }
         modem_snap = self.modem.snapshot() if self.modem is not None else None
         return web.json_response(
@@ -316,6 +317,7 @@ class StreamerServer:
                 "dry_run": power_snap["dry_run"],
                 "schedule_enabled": power_snap["schedule_enabled"],
                 "next_event": power_snap["next_event"],
+                "recovery": power_snap.get("recovery"),
                 "site_name": self.config.server.site_name or "Streamer",
                 "stream": {
                     "framerate": self.config.stream.framerate,
