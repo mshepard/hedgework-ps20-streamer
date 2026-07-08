@@ -7,9 +7,9 @@
 # Python preview that opens both cameras and both models on one VDevice.
 #
 # Usage:
-#   bash scripts/dual_hailo_preview.sh
-#   bash scripts/dual_hailo_preview.sh --stock
-#   bash scripts/dual_hailo_preview.sh --threshold 0.4
+#   bash scripts/dual_hailo_preview.sh --zoo
+#   bash scripts/dual_hailo_preview.sh --zoo --headless --out-dir /tmp/dual_preview_out
+#   bash scripts/dual_hailo_preview.sh --zoo --threshold1 0.3
 #
 # For a single-camera rpicam-hello smoke test (original one-process flow):
 #   rpicam-hello -t 0 --camera 0 \

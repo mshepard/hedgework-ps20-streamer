@@ -24,12 +24,34 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+HAILO_MODELS_DIR = Path("/usr/share/hailo-models")
 
 DEFAULT_CAM0_HEF = Path("/var/lib/streamer/models/bird_v1.hef")
 DEFAULT_CAM1_HEF = Path("/var/lib/streamer/models/pollinator_v1.hef")
 DEFAULT_CAM0_LABELS = Path("/var/lib/streamer/models/bird_v1.json")
 DEFAULT_CAM1_LABELS = Path("/var/lib/streamer/models/pollinator_v1.json")
-STOCK_YOLOV8_HEF = Path("/usr/share/hailo-models/yolov8s_h8l.hef")
+
+# Preinstalled zoo models from `hailo-all` / rpicam-apps demos.
+# Prefer Hailo-8 variants first; fall back to Hailo-8L on AI HAT+ boards.
+ZOO_CAM0_HEFS = ("yolov8s_h8.hef", "yolov8s_h8l.hef")
+ZOO_CAM1_HEFS = ("yolov6n_h8.hef", "yolov6n_h8l.hef")
+
+# COCO class names used by the stock zoo detection models.
+COCO_LABELS = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic_light", "fire_hydrant", "stop_sign",
+    "parking_meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports_ball", "kite", "baseball_bat", "baseball_glove", "skateboard",
+    "surfboard", "tennis_racket", "bottle", "wine_glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot_dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted_plant", "bed", "dining_table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell_phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy_bear", "hair_drier", "toothbrush",
+]
 
 
 @dataclass(frozen=True)
@@ -50,26 +72,47 @@ class Detection:
 class ModelRunner:
     network_group: Any
     network_group_params: Any
-    infer_pipeline: Any
+    input_vstreams_params: Any
+    output_vstreams_params: Any
+    input_name: str
     labels: list[str]
     inference_size: tuple[int, int]
+    model_name: str
 
     def detect(self, rgb: np.ndarray, threshold: float) -> list[Detection]:
-        input_data = _preprocess(rgb, self.inference_size)
-        with self.infer_pipeline as _pipeline:
-            bindings = self.network_group.create_bindings(
-                self.network_group_params
-            )
-            bindings.input().set_buffer(input_data)
-            self.network_group.run(bindings)
-            outputs = {
-                name: np.array(bindings.output(name).get_buffer())
-                for name in bindings._output_names
-            }
-        detections = _parse_yolo_outputs(
+        from hailo_platform import InferVStreams
+
+        input_data = _preprocess(rgb, self.inference_size).astype(np.float32)
+        with self.network_group.activate(self.network_group_params):
+            with InferVStreams(
+                self.network_group,
+                self.input_vstreams_params,
+                self.output_vstreams_params,
+                tf_nms_format=True,
+            ) as infer_pipeline:
+                outputs = infer_pipeline.infer({self.input_name: input_data})
+        detections = _parse_detection_outputs(
             outputs, self.labels, rgb.shape[1], rgb.shape[0]
         )
         return [d for d in detections if d.confidence >= threshold]
+
+
+def _resolve_zoo_hef(*candidates: str) -> Path:
+    for name in candidates:
+        path = HAILO_MODELS_DIR / name
+        if path.is_file():
+            return path
+    tried = ", ".join(candidates)
+    raise FileNotFoundError(
+        f"No zoo HEF found in {HAILO_MODELS_DIR}. Tried: {tried}"
+    )
+
+
+def _apply_zoo_defaults(args: argparse.Namespace) -> None:
+    args.cam0_hef = _resolve_zoo_hef(*ZOO_CAM0_HEFS)
+    args.cam1_hef = _resolve_zoo_hef(*ZOO_CAM1_HEFS)
+    args.cam0_labels = Path()
+    args.cam1_labels = Path()
 
 
 def _load_labels(path: Path | None) -> list[str]:
@@ -100,34 +143,60 @@ def _preprocess(rgb: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return np.expand_dims(arr, axis=0)
 
 
-def _parse_yolo_outputs(
-    outputs: dict[str, np.ndarray],
-    labels: list[str],
-    width: int,
-    height: int,
-) -> list[Detection]:
-    if not outputs:
-        return []
-    tensor = next(iter(outputs.values()))
-    # Some HEFs expose outputs as Python lists (or lists-of-arrays)
-    # instead of a single ndarray. Normalize to an ndarray early.
-    tensor = np.asarray(tensor)
+def _species_name(labels: list[str], class_id: int) -> str:
+    if class_id < len(labels):
+        return labels[class_id]
+    return f"class_{class_id}"
 
-    # Typical YOLOv8 inference layouts (examples):
-    #   (1, N, 4+nc)
-    #   (1, 4+nc, N)
+
+def _parse_nms_outputs(
+    tensor: np.ndarray,
+    labels: list[str],
+) -> list[Detection]:
+    """Parse Hailo NMS output from InferVStreams(tf_nms_format=True)."""
+
+    if tensor.ndim == 4:
+        tensor = tensor[0]
+    if tensor.ndim != 3 or tensor.shape[1] != 5:
+        return []
+
+    num_classes, _, num_detections = tensor.shape
+    detections: list[Detection] = []
+    for class_id in range(num_classes):
+        for det_id in range(num_detections):
+            ymin, xmin, ymax, xmax, confidence = tensor[class_id, :, det_id]
+            confidence = float(confidence)
+            if confidence < 0.01:
+                continue
+            x_center = (float(xmin) + float(xmax)) / 2
+            y_center = (float(ymin) + float(ymax)) / 2
+            detections.append(
+                Detection(
+                    species=_species_name(labels, class_id),
+                    confidence=confidence,
+                    x_center=x_center,
+                    y_center=y_center,
+                    width=float(xmax) - float(xmin),
+                    height=float(ymax) - float(ymin),
+                )
+            )
+    return detections
+
+
+def _parse_raw_yolo_outputs(
+    tensor: np.ndarray,
+    labels: list[str],
+) -> list[Detection]:
+    """Parse raw YOLO tensor layouts from custom HEF exports."""
+
     if tensor.ndim == 3 and tensor.shape[1] < tensor.shape[2]:
         tensor = np.transpose(tensor, (0, 2, 1))
 
     if tensor.ndim == 3:
-        # (1, N, 4+nc) -> (N, 4+nc)
         preds = tensor[0]
     elif tensor.ndim == 2:
-        # (N, 4+nc)
         preds = tensor
     else:
-        # Best-effort fallback: collapse everything except the last dim
-        # and treat it as (N, 4+nc).
         if tensor.ndim == 0:
             return []
         preds = tensor.reshape(-1, tensor.shape[-1])
@@ -144,14 +213,9 @@ def _parse_yolo_outputs(
         confidence = float(scores[class_id])
         if confidence < 0.01:
             continue
-        species = (
-            labels[class_id]
-            if class_id < len(labels)
-            else f"class_{class_id}"
-        )
         detections.append(
             Detection(
-                species=species,
+                species=_species_name(labels, class_id),
                 confidence=confidence,
                 x_center=float(x),
                 y_center=float(y),
@@ -160,6 +224,23 @@ def _parse_yolo_outputs(
             )
         )
     return detections
+
+
+def _parse_detection_outputs(
+    outputs: dict[str, Any],
+    labels: list[str],
+    width: int,
+    height: int,
+) -> list[Detection]:
+    del width, height  # boxes are already normalized 0..1
+    if not outputs:
+        return []
+
+    tensor = np.asarray(next(iter(outputs.values())))
+    nms_detections = _parse_nms_outputs(tensor, labels)
+    if nms_detections:
+        return nms_detections
+    return _parse_raw_yolo_outputs(tensor, labels)
 
 
 def _box_pixels(
@@ -211,9 +292,11 @@ def _load_model(
 ) -> ModelRunner:
     from hailo_platform import (
         ConfigureParams,
+        FormatType,
         HEF,
         HailoStreamInterface,
-        InferVStreams,
+        InputVStreamParams,
+        OutputVStreamParams,
     )
 
     if not hef_path.is_file():
@@ -224,6 +307,8 @@ def _load_model(
         fallback = hef_path.with_suffix(".json")
         if fallback.is_file():
             labels = _load_labels(fallback)
+    if not labels:
+        labels = COCO_LABELS
 
     hef = HEF(str(hef_path))
     params = ConfigureParams.create_from_hef(
@@ -231,13 +316,26 @@ def _load_model(
     )
     network_group = vdevice.configure(hef, params)[0]
     network_group_params = network_group.create_params()
-    infer_pipeline = InferVStreams(network_group, network_group_params)
+    input_vstream_info = hef.get_input_vstream_infos()[0]
+    input_vstreams_params = InputVStreamParams.make_from_network_group(
+        network_group,
+        quantized=False,
+        format_type=FormatType.FLOAT32,
+    )
+    output_vstreams_params = OutputVStreamParams.make_from_network_group(
+        network_group,
+        quantized=False,
+        format_type=FormatType.FLOAT32,
+    )
     return ModelRunner(
         network_group=network_group,
         network_group_params=network_group_params,
-        infer_pipeline=infer_pipeline,
+        input_vstreams_params=input_vstreams_params,
+        output_vstreams_params=output_vstreams_params,
+        input_name=input_vstream_info.name,
         labels=labels,
         inference_size=inference_size,
+        model_name=hef_path.stem,
     )
 
 
@@ -301,14 +399,39 @@ def parse_args() -> argparse.Namespace:
         help=f"Labels JSON for camera 1 (default: {DEFAULT_CAM1_LABELS})",
     )
     parser.add_argument(
+        "--zoo",
+        action="store_true",
+        help=(
+            "Use two different preinstalled zoo models: "
+            "YOLOv8s on cam0, YOLOv6n on cam1"
+        ),
+    )
+    parser.add_argument(
         "--stock",
         action="store_true",
-        help="Use the stock YOLOv8 demo HEF on both cameras",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=5.0)
-    parser.add_argument("--threshold", type=float, default=0.55)
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.4,
+        help="Default confidence threshold for both cameras",
+    )
+    parser.add_argument(
+        "--threshold0",
+        type=float,
+        default=None,
+        help="Confidence threshold for camera 0 (overrides --threshold)",
+    )
+    parser.add_argument(
+        "--threshold1",
+        type=float,
+        default=None,
+        help="Confidence threshold for camera 1 (overrides --threshold)",
+    )
     parser.add_argument(
         "--inference-size",
         type=int,
@@ -345,10 +468,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.stock:
-        args.cam0_hef = STOCK_YOLOV8_HEF
-        args.cam1_hef = STOCK_YOLOV8_HEF
-        args.cam0_labels = Path()
-        args.cam1_labels = Path()
+        args.zoo = True
+    if args.zoo:
+        _apply_zoo_defaults(args)
+
+    threshold0 = (
+        args.threshold if args.threshold0 is None else args.threshold0
+    )
+    threshold1 = (
+        args.threshold if args.threshold1 is None else args.threshold1
+    )
 
     if _streamer_running():
         print(
@@ -368,6 +497,8 @@ def main() -> int:
         vdevice, args.cam1_hef, args.cam1_labels or None, inference_size
     )
 
+    print(f"Camera 0 model: {model0.model_name} ({args.cam0_hef})")
+    print(f"Camera 1 model: {model1.model_name} ({args.cam1_hef})")
     print("Opening cameras...")
     cam0 = _open_camera(0, args.width, args.height, args.fps)
     cam1 = _open_camera(1, args.width, args.height, args.fps)
@@ -398,11 +529,15 @@ def main() -> int:
                 frame0 = cam0.capture_array()
                 frame1 = cam1.capture_array()
 
-                dets0 = model0.detect(frame0, args.threshold)
-                dets1 = model1.detect(frame1, args.threshold)
+                dets0 = model0.detect(frame0, threshold0)
+                dets1 = model1.detect(frame1, threshold1)
 
-                left = annotate_frame(frame0, dets0, "Camera 0")
-                right = annotate_frame(frame1, dets1, "Camera 1")
+                left = annotate_frame(
+                    frame0, dets0, f"Camera 0 ({model0.model_name})"
+                )
+                right = annotate_frame(
+                    frame1, dets1, f"Camera 1 ({model1.model_name})"
+                )
                 combined = Image.new("RGB", (left.width + right.width, left.height))
                 combined.paste(left, (0, 0))
                 combined.paste(right, (left.width, 0))
@@ -461,10 +596,14 @@ def main() -> int:
         try:
             frame0 = cam0.capture_array()
             frame1 = cam1.capture_array()
-            dets0 = model0.detect(frame0, args.threshold)
-            dets1 = model1.detect(frame1, args.threshold)
-            left = annotate_frame(frame0, dets0, "Camera 0")
-            right = annotate_frame(frame1, dets1, "Camera 1")
+            dets0 = model0.detect(frame0, threshold0)
+            dets1 = model1.detect(frame1, threshold1)
+            left = annotate_frame(
+                frame0, dets0, f"Camera 0 ({model0.model_name})"
+            )
+            right = annotate_frame(
+                frame1, dets1, f"Camera 1 ({model1.model_name})"
+            )
             combined = Image.new("RGB", (left.width + right.width, left.height))
             combined.paste(left, (0, 0))
             combined.paste(right, (left.width, 0))
