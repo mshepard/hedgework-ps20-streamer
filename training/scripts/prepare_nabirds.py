@@ -79,37 +79,46 @@ def map_allowlist_to_class_ids(
 def load_metadata(
     source: Path,
 ) -> tuple[
-    dict[int, str],
-    dict[int, int],
-    dict[int, tuple[int, int, int, int]],
-    dict[int, bool],
+    dict[str, str],
+    dict[str, int],
+    dict[str, tuple[int, int, int, int]],
+    dict[str, bool],
+    dict[str, tuple[int, int]],
 ]:
-    image_paths: dict[int, str] = {}
+    image_paths: dict[str, str] = {}
     for line in source.joinpath("images.txt").read_text(encoding="utf-8").splitlines():
         parts = line.strip().split(maxsplit=1)
         if len(parts) == 2:
-            image_paths[int(parts[0])] = parts[1]
+            image_paths[parts[0]] = parts[1]
 
-    image_labels: dict[int, int] = {}
+    image_labels: dict[str, int] = {}
     for line in source.joinpath("image_class_labels.txt").read_text(encoding="utf-8").splitlines():
         parts = line.strip().split()
         if len(parts) == 2:
-            image_labels[int(parts[0])] = int(parts[1])
+            image_labels[parts[0]] = int(parts[1])
 
-    boxes: dict[int, tuple[int, int, int, int]] = {}
+    boxes: dict[str, tuple[int, int, int, int]] = {}
     for line in source.joinpath("bounding_boxes.txt").read_text(encoding="utf-8").splitlines():
         parts = line.strip().split()
         if len(parts) == 5:
-            image_id = int(parts[0])
+            image_id = parts[0]
             boxes[image_id] = (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
 
-    is_train: dict[int, bool] = {}
+    is_train: dict[str, bool] = {}
     for line in source.joinpath("train_test_split.txt").read_text(encoding="utf-8").splitlines():
         parts = line.strip().split()
         if len(parts) == 2:
-            is_train[int(parts[0])] = parts[1] == "1"
+            is_train[parts[0]] = parts[1] == "1"
 
-    return image_paths, image_labels, boxes, is_train
+    sizes: dict[str, tuple[int, int]] = {}
+    sizes_path = source / "sizes.txt"
+    if sizes_path.is_file():
+        for line in sizes_path.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split()
+            if len(parts) == 3:
+                sizes[parts[0]] = (int(parts[1]), int(parts[2]))
+
+    return image_paths, image_labels, boxes, is_train, sizes
 
 
 def bbox_to_yolo(
@@ -152,7 +161,7 @@ def main() -> None:
     if not nabirds_to_yolo:
         raise SystemExit("No NABirds classes matched the allowlist; check ps20_birds.txt")
 
-    image_paths, image_labels, boxes, is_train = load_metadata(args.source)
+    image_paths, image_labels, boxes, is_train, sizes = load_metadata(args.source)
 
     if args.output.exists():
         shutil.rmtree(args.output)
@@ -164,11 +173,8 @@ def main() -> None:
     for d in (train_dir, val_dir, train_labels, val_labels):
         d.mkdir(parents=True)
 
-    # Pillow only if we need image dimensions
-    from PIL import Image
-
-    train_ids: list[int] = []
-    val_ids: list[int] = []
+    train_ids: list[str] = []
+    val_ids: list[str] = []
     for image_id, class_id in image_labels.items():
         if class_id not in nabirds_to_yolo:
             continue
@@ -188,7 +194,7 @@ def main() -> None:
 
     counts = {"train": 0, "val": 0}
 
-    def export_one(image_id: int, split: str) -> None:
+    def export_one(image_id: str, split: str) -> None:
         rel_path = image_paths.get(image_id)
         if not rel_path:
             return
@@ -197,15 +203,20 @@ def main() -> None:
             return
         class_id = image_labels[image_id]
         yolo_class = nabirds_to_yolo[class_id]
-        with Image.open(src) as img:
-            img_w, img_h = img.size
+        if image_id in sizes:
+            img_w, img_h = sizes[image_id]
+        else:
+            from PIL import Image
+
+            with Image.open(src) as img:
+                img_w, img_h = img.size
         if image_id in boxes:
             x, y, w, h = boxes[image_id]
             xc, yc, bw, bh = bbox_to_yolo(x, y, w, h, img_w, img_h)
         else:
             xc, yc, bw, bh = 0.5, 0.5, 1.0, 1.0
 
-        stem = f"{image_id:06d}"
+        stem = image_id.replace("-", "")
         if split == "train":
             img_dst = train_dir / f"{stem}.jpg"
             lbl_dst = train_labels / f"{stem}.txt"

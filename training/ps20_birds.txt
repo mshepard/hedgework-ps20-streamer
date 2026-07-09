@@ -24,3 +24,9 @@ Red-winged Blackbird
 Song Sparrow
 Common Grackle
 Dark-eyed Junco
+American Robin
+Tufted Titmouse
+Carolina Wren
+Common Grackle
+Hairy Woodpecker
+Red-bellied Woodpecker
