@@ -34,6 +34,38 @@ def load_allowlist(path: Path) -> list[str]:
     return names
 
 
+def _strip_quotes(text: str) -> str:
+    return text.strip().strip("'\"")
+
+
+def parse_names_from_yaml(text: str) -> list[str]:
+    """Parse class names from Roboflow / Ultralytics data.yaml variants."""
+
+    names: list[str] = []
+    in_names = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("names:"):
+            remainder = stripped[6:].strip()
+            if remainder.startswith("[") and remainder.endswith("]"):
+                inner = remainder[1:-1]
+                return [_strip_quotes(part) for part in inner.split(",") if part.strip()]
+            in_names = True
+            continue
+        if in_names:
+            if stripped.startswith("- "):
+                names.append(_strip_quotes(stripped[2:]))
+            elif ":" in stripped:
+                key, _, value = stripped.partition(":")
+                if key.strip().isdigit():
+                    names.append(_strip_quotes(value))
+                elif stripped and not stripped.startswith("#"):
+                    break
+            elif stripped and not stripped.startswith("#"):
+                break
+    return names
+
+
 def load_class_names(source: Path) -> list[str]:
     classes_txt = source / "classes.txt"
     if classes_txt.is_file():
@@ -45,20 +77,11 @@ def load_class_names(source: Path) -> list[str]:
 
     data_yaml = source / "data.yaml"
     if not data_yaml.is_file():
+        data_yaml = source / "data.yml"
+    if not data_yaml.is_file():
         raise FileNotFoundError(f"No classes.txt or data.yaml in {source}")
 
-    names: list[str] = []
-    in_names = False
-    for line in data_yaml.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("names:"):
-            in_names = True
-            continue
-        if in_names:
-            if stripped.startswith("- "):
-                names.append(stripped[2:].strip().strip("'\""))
-            elif stripped and not stripped.startswith("#"):
-                break
+    names = parse_names_from_yaml(data_yaml.read_text(encoding="utf-8"))
     if not names:
         raise ValueError(f"Could not parse class names from {data_yaml}")
     return names
@@ -66,17 +89,16 @@ def load_class_names(source: Path) -> list[str]:
 
 def filter_split(
     source_split: Path,
-    dest_split: Path,
+    dest_images: Path,
+    dest_labels: Path,
     old_to_new: dict[int, int],
 ) -> int:
     src_images = source_split / "images"
     src_labels = source_split / "labels"
     if not src_labels.is_dir():
         return 0
-    dst_images = dest_split / "images"
-    dst_labels = dest_split / "labels"
-    dst_images.mkdir(parents=True, exist_ok=True)
-    dst_labels.mkdir(parents=True, exist_ok=True)
+    dest_images.mkdir(parents=True, exist_ok=True)
+    dest_labels.mkdir(parents=True, exist_ok=True)
 
     kept = 0
     for label_path in sorted(src_labels.glob("*.txt")):
@@ -96,8 +118,8 @@ def filter_split(
         image_candidates = list(src_images.glob(stem + ".*"))
         if not image_candidates:
             continue
-        shutil.copy2(image_candidates[0], dst_images / image_candidates[0].name)
-        (dst_labels / label_path.name).write_text(
+        shutil.copy2(image_candidates[0], dest_images / image_candidates[0].name)
+        (dest_labels / label_path.name).write_text(
             "\n".join(new_lines) + "\n", encoding="utf-8"
         )
         kept += 1
@@ -157,10 +179,20 @@ def main() -> None:
     args.output.mkdir(parents=True)
 
     totals: dict[str, int] = {}
+    train_images = args.output / "images" / "train"
+    train_labels = args.output / "labels" / "train"
+    val_images = args.output / "images" / "val"
+    val_labels = args.output / "labels" / "val"
+
     for src_name, dst_name in resolve_splits(args.source):
+        if dst_name == "train":
+            dest_images, dest_labels = train_images, train_labels
+        else:
+            dest_images, dest_labels = val_images, val_labels
         count = filter_split(
             args.source / src_name,
-            args.output / dst_name if dst_name != "val" else args.output / "val",
+            dest_images,
+            dest_labels,
             old_to_new,
         )
         totals[src_name] = count

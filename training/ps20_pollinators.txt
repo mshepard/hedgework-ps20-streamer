@@ -6,8 +6,8 @@
 # Source: https://universe.roboflow.com/georgia-institute-of-technology-bqtzy/pollinators
 # Export format: YOLOv8
 #
-bee
-butterfly
-moth
-beetle
-grasshopper
+Bees-Wasps
+Bumble Bee
+Butterflies-Moths
+Fly
+Hummingbird
