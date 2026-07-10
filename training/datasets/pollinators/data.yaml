@@ -1,4 +1,3 @@
-path: /Users/markshepard/Library/CloudStorage/Dropbox/Projects/Hedgerow/PS 20/Software/ObservationMast/Streamer/training/datasets/pollinators
 train: images/train
 val: images/val
 nc: 5
