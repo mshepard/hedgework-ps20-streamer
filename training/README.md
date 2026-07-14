@@ -43,7 +43,7 @@ python training/scripts/list_nabirds_classes.py ~/data/nabirds --grep "Cardinal"
 python training/scripts/prepare_nabirds.py \
   --source ~/data/nabirds \
   --allowlist training/ps20_birds.txt \
-  --output training/datasets/birds
+  --output training/datasets/birds_v2
 ```
 
 ### Train
@@ -51,31 +51,31 @@ python training/scripts/prepare_nabirds.py \
 ```bash
 pip install ultralytics pillow
 yolo detect train \
-  data=training/datasets/birds/data.yaml \
+  data=training/datasets/birds_v2/data.yaml \
   model=yolov8n.pt \
   epochs=100 \
   imgsz=640 \
   project=training/runs \
-  name=bird_v1
+  name=bird_v2
 ```
 
 **Where outputs land:** recent Ultralytics versions nest detect runs under `runs/detect/`, so weights and metrics end up at something like:
 
 ```
-runs/detect/training/runs/bird_v1/weights/best.pt
-runs/detect/training/runs/bird_v1/results.csv
+runs/detect/training/runs/bird_v2/weights/best.pt
+runs/detect/training/runs/bird_v2/results.csv
 ```
 
-If you re-run with the same `name`, Ultralytics appends `-2`, `-3`, … (`bird_v1-2`, etc.). Use the latest run directory for export, or pass `exist_ok=True` to overwrite.
+If you re-run with the same `name`, Ultralytics appends `-2`, `-3`, … (`bird_v2-2`, etc.). Use the latest run directory for export, or pass `exist_ok=True` to overwrite.
 
 ### Export labels + Hailo
 
 ```bash
-# Adjust RUN_DIR if your run was bird_v1-2, etc.
-RUN_DIR=runs/detect/training/runs/bird_v1
+# Adjust RUN_DIR if your run was bird_v2-2, etc.
+RUN_DIR=runs/detect/training/runs/bird_v2
 
 python training/scripts/export_model_labels.py \
-  training/datasets/birds/data.yaml \
+  training/datasets/birds_v2/data.yaml \
   "$RUN_DIR/labels.json"
 
 yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
@@ -84,8 +84,8 @@ yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
 
 Deploy to the Pi:
 
-- `/var/lib/streamer/models/bird_v1.hef`
-- `/var/lib/streamer/models/bird_v1.json`
+- `/var/lib/streamer/models/bird_v2.hef`
+- `/var/lib/streamer/models/bird_v2.json`
 
 ---
 

@@ -47,6 +47,26 @@ def normalize(text: str) -> str:
     return " ".join(text.lower().replace("_", " ").replace(".", " ").split())
 
 
+def validate_allowlist(allowlist: list[str]) -> None:
+    """Reject entries that would silently create duplicate YOLO classes."""
+
+    seen: dict[str, str] = {}
+    duplicates: list[tuple[str, str]] = []
+    for name in allowlist:
+        normalized = normalize(name)
+        if normalized in seen:
+            duplicates.append((seen[normalized], name))
+        else:
+            seen[normalized] = name
+
+    if duplicates:
+        details = "; ".join(
+            f"{first!r} and {duplicate!r}"
+            for first, duplicate in duplicates
+        )
+        raise ValueError(f"Duplicate normalized allowlist entries: {details}")
+
+
 def load_nabirds_classes(source: Path) -> dict[int, str]:
     classes: dict[int, str] = {}
     for line in source.joinpath("classes.txt").read_text(encoding="utf-8").splitlines():
@@ -64,12 +84,21 @@ def map_allowlist_to_class_ids(
     """Map each NABirds class_id to a contiguous YOLO class index."""
 
     nabirds_to_yolo: dict[int, int] = {}
+    owners: dict[int, str] = {}
     for yolo_idx, needle in enumerate(allowlist):
         n_needle = normalize(needle)
         matched = False
         for class_id, description in nabirds_classes.items():
             if n_needle in normalize(description):
+                previous = owners.get(class_id)
+                if previous is not None:
+                    raise ValueError(
+                        "Overlapping allowlist entries "
+                        f"{previous!r} and {needle!r} both match NABirds "
+                        f"class {class_id}: {description!r}"
+                    )
                 nabirds_to_yolo[class_id] = yolo_idx
+                owners[class_id] = needle
                 matched = True
         if not matched:
             print(f"Warning: no NABirds classes matched allowlist entry '{needle}'")
@@ -124,15 +153,31 @@ def load_metadata(
 def bbox_to_yolo(
     x: int, y: int, w: int, h: int, img_w: int, img_h: int
 ) -> tuple[float, float, float, float]:
-    x_center = (x + w / 2) / img_w
-    y_center = (y + h / 2) / img_h
-    return x_center, y_center, w / img_w, h / img_h
+    # A small number of NABirds source boxes extend a few pixels beyond
+    # the declared image dimensions. Clip them before normalization so
+    # generated YOLO boxes always remain inside [0, 1].
+    x0 = max(0, min(x, img_w))
+    y0 = max(0, min(y, img_h))
+    x1 = max(x0, min(x + w, img_w))
+    y1 = max(y0, min(y + h, img_h))
+    clipped_w = x1 - x0
+    clipped_h = y1 - y0
+    if clipped_w == 0 or clipped_h == 0:
+        raise ValueError(
+            f"Bounding box {(x, y, w, h)} is outside image "
+            f"{(img_w, img_h)}"
+        )
+    x_center = (x0 + clipped_w / 2) / img_w
+    y_center = (y0 + clipped_h / 2) / img_h
+    return x_center, y_center, clipped_w / img_w, clipped_h / img_h
 
 
 def write_data_yaml(output: Path, names: list[str]) -> None:
     yaml_path = output / "data.yaml"
     lines = [
-        f"path: {output.resolve()}",
+        # Omitting ``path`` makes Ultralytics use data.yaml's directory
+        # as the dataset root, so the generated dataset remains portable
+        # when copied from this Mac to an Ubuntu training machine.
         "train: images/train",
         "val: images/val",
         f"nc: {len(names)}",
@@ -156,6 +201,7 @@ def main() -> None:
     args = parser.parse_args()
 
     allowlist = load_allowlist(args.allowlist)
+    validate_allowlist(allowlist)
     nabirds_classes = load_nabirds_classes(args.source)
     nabirds_to_yolo = map_allowlist_to_class_ids(allowlist, nabirds_classes)
     if not nabirds_to_yolo:
