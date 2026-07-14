@@ -59,14 +59,26 @@ yolo detect train \
   name=bird_v1
 ```
 
+**Where outputs land:** recent Ultralytics versions nest detect runs under `runs/detect/`, so weights and metrics end up at something like:
+
+```
+runs/detect/training/runs/bird_v1/weights/best.pt
+runs/detect/training/runs/bird_v1/results.csv
+```
+
+If you re-run with the same `name`, Ultralytics appends `-2`, `-3`, … (`bird_v1-2`, etc.). Use the latest run directory for export, or pass `exist_ok=True` to overwrite.
+
 ### Export labels + Hailo
 
 ```bash
+# Adjust RUN_DIR if your run was bird_v1-2, etc.
+RUN_DIR=runs/detect/training/runs/bird_v1
+
 python training/scripts/export_model_labels.py \
   training/datasets/birds/data.yaml \
-  training/runs/bird_v1/labels.json
+  "$RUN_DIR/labels.json"
 
-yolo export model=training/runs/bird_v1/weights/best.pt format=onnx imgsz=640
+yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
 # Compile ONNX → HEF with Hailo Dataflow Compiler on x86 Linux
 ```
 
@@ -117,11 +129,13 @@ yolo detect train \
 ### Export labels + Hailo
 
 ```bash
+RUN_DIR=runs/detect/training/runs/pollinator_v1
+
 python training/scripts/export_model_labels.py \
   training/datasets/pollinators/data.yaml \
-  training/runs/pollinator_v1/labels.json
+  "$RUN_DIR/labels.json"
 
-yolo export model=training/runs/pollinator_v1/weights/best.pt format=onnx imgsz=640
+yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
 # Compile ONNX → HEF
 ```
 
