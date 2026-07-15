@@ -4,7 +4,7 @@ Train **two YOLOv8 models** on a GPU workstation, then compile each to Hailo `.h
 
 | Model | Camera | Dataset | Whitelist |
 |-------|--------|---------|-----------|
-| `bird_v1` | cam0 — bird feeder | [NABirds](https://dl.allaboutbirds.org/nabirds) | [`ps20_birds.txt`](ps20_birds.txt) |
+| `bird_v2` | cam0 — bird feeder | [NABirds](https://dl.allaboutbirds.org/nabirds) | [`ps20_birds.txt`](ps20_birds.txt) |
 | `pollinator_v1` | cam1 — pollinator garden | [Georgia Tech Pollinators (Roboflow)](https://universe.roboflow.com/georgia-institute-of-technology-bqtzy/pollinators) | [`ps20_pollinators.txt`](ps20_pollinators.txt) |
 
 This repo does **not** download datasets for you.
@@ -55,15 +55,16 @@ yolo detect train \
   model=yolov8n.pt \
   epochs=100 \
   imgsz=640 \
-  project=training/runs \
+  project="$PWD/training/runs" \
   name=bird_v2
 ```
 
-**Where outputs land:** recent Ultralytics versions nest detect runs under `runs/detect/`, so weights and metrics end up at something like:
+Using an absolute `project` path prevents Ultralytics from nesting the
+run under `runs/detect/training/runs`. Outputs land at:
 
 ```
-runs/detect/training/runs/bird_v2/weights/best.pt
-runs/detect/training/runs/bird_v2/results.csv
+training/runs/bird_v2/weights/best.pt
+training/runs/bird_v2/results.csv
 ```
 
 If you re-run with the same `name`, Ultralytics appends `-2`, `-3`, … (`bird_v2-2`, etc.). Use the latest run directory for export, or pass `exist_ok=True` to overwrite.
@@ -72,13 +73,14 @@ If you re-run with the same `name`, Ultralytics appends `-2`, `-3`, … (`bird_v
 
 ```bash
 # Adjust RUN_DIR if your run was bird_v2-2, etc.
-RUN_DIR=runs/detect/training/runs/bird_v2
+RUN_DIR=training/runs/bird_v2
 
 python training/scripts/export_model_labels.py \
   training/datasets/birds_v2/data.yaml \
-  "$RUN_DIR/labels.json"
+  training/models/bird_v2.json
 
 yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
+# ONNX output: "$RUN_DIR/weights/best.onnx"
 # Compile ONNX → HEF with Hailo Dataflow Compiler on x86 Linux
 ```
 
@@ -122,20 +124,28 @@ yolo detect train \
   model=yolov8n.pt \
   epochs=100 \
   imgsz=640 \
-  project=training/runs \
+  project="$PWD/training/runs" \
   name=pollinator_v1
+```
+
+Output:
+
+```
+training/runs/pollinator_v1/weights/best.pt
+training/runs/pollinator_v1/results.csv
 ```
 
 ### Export labels + Hailo
 
 ```bash
-RUN_DIR=runs/detect/training/runs/pollinator_v1
+RUN_DIR=training/runs/pollinator_v1
 
 python training/scripts/export_model_labels.py \
   training/datasets/pollinators/data.yaml \
-  "$RUN_DIR/labels.json"
+  training/models/pollinator_v1.json
 
 yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
+# ONNX output: "$RUN_DIR/weights/best.onnx"
 # Compile ONNX → HEF
 ```
 
@@ -155,8 +165,8 @@ In `/etc/streamer/streamer.toml`:
 enabled = true
 
 [camera0.wildlife]
-model_path = "/var/lib/streamer/models/bird_v1.hef"
-labels_path = "/var/lib/streamer/models/bird_v1.json"
+model_path = "/var/lib/streamer/models/bird_v2.hef"
+labels_path = "/var/lib/streamer/models/bird_v2.json"
 
 [camera1.wildlife]
 model_path = "/var/lib/streamer/models/pollinator_v1.hef"
