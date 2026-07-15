@@ -16,7 +16,7 @@ from streamer.config import AppConfig, load_config
 from streamer.modem import ModemProbe
 from streamer.power import PowerManager
 from streamer.server import StreamerServer
-from streamer.wildlife import WildlifeManager
+from streamer.wildlife.manager import WildlifeManager
 
 
 # Where the sleep_enabled override + (future) power state lives.

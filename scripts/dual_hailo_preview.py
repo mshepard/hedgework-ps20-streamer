@@ -26,10 +26,10 @@ from PIL import Image, ImageDraw
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HAILO_MODELS_DIR = Path("/usr/share/hailo-models")
 
-DEFAULT_CAM0_HEF = Path("/var/lib/streamer/models/bird_v1.hef")
-DEFAULT_CAM1_HEF = Path("/var/lib/streamer/models/pollinator_v1.hef")
-DEFAULT_CAM0_LABELS = Path("/var/lib/streamer/models/bird_v1.json")
-DEFAULT_CAM1_LABELS = Path("/var/lib/streamer/models/pollinator_v1.json")
+DEFAULT_CAM0_HEF = Path("/var/lib/streamer/models/bird.hef")
+DEFAULT_CAM1_HEF = Path("/var/lib/streamer/models/pollinator.hef")
+DEFAULT_CAM0_LABELS = Path("/var/lib/streamer/models/bird.json")
+DEFAULT_CAM1_LABELS = Path("/var/lib/streamer/models/pollinator.json")
 
 # Preinstalled zoo models from `hailo-all` / rpicam-apps demos.
 # Prefer Hailo-8 variants first; fall back to Hailo-8L on AI HAT+ boards.

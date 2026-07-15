@@ -7,9 +7,9 @@
     }
   },
   "hailo_yolo_inference": {
-    "hef_file_8L": "/var/lib/streamer/models/pollinator_v1.hef",
-    "hef_file_8": "/var/lib/streamer/models/pollinator_v1.hef",
-    "hailopp_config_file": "/var/lib/streamer/models/pollinator_v1.json",
+    "hef_file_8L": "/var/lib/streamer/models/pollinator.hef",
+    "hef_file_8": "/var/lib/streamer/models/pollinator.hef",
+    "hailopp_config_file": "/var/lib/streamer/models/pollinator.json",
     "max_detections": 20,
     "threshold": 0.55,
     "temporal_filter": {

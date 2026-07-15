@@ -202,8 +202,8 @@ class WildlifeSyncConfig(BaseModel):
 
 class WildlifeConfig(BaseModel):
     enabled: bool = False
-    model_path: str = "/var/lib/streamer/models/wildlife_v1.hef"
-    labels_path: str = "/var/lib/streamer/models/wildlife_v1.json"
+    model_path: str = "/var/lib/streamer/models/wildlife.hef"
+    labels_path: str = "/var/lib/streamer/models/wildlife.json"
     confidence_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     cooldown_seconds: float = Field(default=30.0, ge=0.0)
     inference_size: tuple[int, int] = (640, 640)

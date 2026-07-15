@@ -170,14 +170,14 @@ store_annotated = true
 
 [camera0.wildlife]
 # NABirds-trained bird model (see training/README.md)
-model_path = "/var/lib/streamer/models/bird_v1.hef"
-labels_path = "/var/lib/streamer/models/bird_v1.json"
+model_path = "/var/lib/streamer/models/bird.hef"
+labels_path = "/var/lib/streamer/models/bird.json"
 classes = []
 
 [camera1.wildlife]
 # Georgia Tech Roboflow pollinator model (see training/README.md)
-model_path = "/var/lib/streamer/models/pollinator_v1.hef"
-labels_path = "/var/lib/streamer/models/pollinator_v1.json"
+model_path = "/var/lib/streamer/models/pollinator.hef"
+labels_path = "/var/lib/streamer/models/pollinator.json"
 classes = []
 
 [wildlife.sync]

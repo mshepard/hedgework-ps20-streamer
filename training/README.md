@@ -86,8 +86,8 @@ yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
 
 Deploy to the Pi:
 
-- `/var/lib/streamer/models/bird_v2.hef`
-- `/var/lib/streamer/models/bird_v2.json`
+- `/var/lib/streamer/models/bird.hef`
+- `/var/lib/streamer/models/bird.json`
 
 ---
 
@@ -151,8 +151,8 @@ yolo export model="$RUN_DIR/weights/best.pt" format=onnx imgsz=640
 
 Deploy to the Pi:
 
-- `/var/lib/streamer/models/pollinator_v1.hef`
-- `/var/lib/streamer/models/pollinator_v1.json`
+- `/var/lib/streamer/models/pollinator.hef`
+- `/var/lib/streamer/models/pollinator.json`
 
 ---
 
@@ -165,12 +165,12 @@ In `/etc/streamer/streamer.toml`:
 enabled = true
 
 [camera0.wildlife]
-model_path = "/var/lib/streamer/models/bird_v2.hef"
-labels_path = "/var/lib/streamer/models/bird_v2.json"
+model_path = "/var/lib/streamer/models/bird.hef"
+labels_path = "/var/lib/streamer/models/bird.json"
 
 [camera1.wildlife]
-model_path = "/var/lib/streamer/models/pollinator_v1.hef"
-labels_path = "/var/lib/streamer/models/pollinator_v1.json"
+model_path = "/var/lib/streamer/models/pollinator.hef"
+labels_path = "/var/lib/streamer/models/pollinator.json"
 ```
 
 Restart: `sudo bash scripts/update.sh`

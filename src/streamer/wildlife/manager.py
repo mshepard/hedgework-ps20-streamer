@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 
 from streamer.config import AppConfig, CameraWildlifeConfig
 from streamer.wildlife.db import WildlifeDatabase
-from streamer.wildlife.detector import WildlifeDetectorBackend, build_detector
+from streamer.wildlife.detector import (
+    SharedHailoContext,
+    WildlifeDetectorBackend,
+    build_detector,
+)
 from streamer.wildlife.filters import DetectionFilter
 from streamer.wildlife.storage import save_detection_image
 from streamer.wildlife.sync import WildlifeSyncWorker
@@ -41,6 +45,7 @@ class WildlifeManager:
         self._enabled = config.wildlife.enabled
         self._db = WildlifeDatabase(state_dir / "wildlife.db")
         self._images_dir = state_dir / "detections"
+        self._hailo_context = SharedHailoContext()
         self._detectors: dict[int, WildlifeDetectorBackend] = {}
         self._filters: dict[int, DetectionFilter] = {}
         self._tasks: list[asyncio.Task[None]] = []
@@ -71,6 +76,7 @@ class WildlifeManager:
                 model_path,
                 labels_path,
                 tuple(self._config.wildlife.inference_size),
+                shared_hailo=self._hailo_context,
             )
             try:
                 detector.load()
@@ -132,6 +138,8 @@ class WildlifeManager:
             except asyncio.CancelledError:
                 pass
         self._tasks.clear()
+        self._detectors.clear()
+        self._hailo_context.close()
         if self._sync is not None:
             await self._sync.stop()
             self._sync = None
