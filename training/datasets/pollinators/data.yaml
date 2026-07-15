@@ -1,9 +1,0 @@
-train: images/train
-val: images/val
-nc: 5
-names:
-  - Bees-Wasps
-  - Bumble Bee
-  - Butterflies-Moths
-  - Fly
-  - Hummingbird
