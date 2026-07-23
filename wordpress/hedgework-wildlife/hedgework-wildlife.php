@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Hedgework Wildlife
  * Description: Receives wildlife detections from the PS 20 observation mast and powers the Wildlife Watch public page.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Author: Hedgerow
  * License: MIT
  */
@@ -24,13 +24,13 @@ function hedgework_wildlife_enqueue_assets() {
         'hedgework-wildlife-watch',
         plugins_url('assets/wildlife-watch.css', __FILE__),
         array(),
-        '0.1.0'
+        '0.1.1'
     );
     wp_register_script(
         'hedgework-wildlife-watch',
         plugins_url('assets/wildlife-watch.js', __FILE__),
         array(),
-        '0.1.0',
+        '0.1.1',
         true
     );
 }
@@ -70,10 +70,6 @@ function hedgework_wildlife_watch_shortcode($atts) {
             <div class="hww-gallery-grid" id="hww-gallery-grid">
                 <p class="hww-loading">Loading photos…</p>
             </div>
-        </section>
-        <section class="hww-cameras" aria-label="Live cameras">
-            <h3>Live cameras</h3>
-            <p class="hww-camera-note">Add the Streamer embed snippet here for live bird and pollinator views.</p>
         </section>
     </div>
     <?php

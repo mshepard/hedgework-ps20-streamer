@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from streamer.config import AppConfig, CameraWildlifeConfig
 from streamer.wildlife.db import WildlifeDatabase
 from streamer.wildlife.detector import (
@@ -18,6 +20,7 @@ from streamer.wildlife.detector import (
 from streamer.wildlife.filters import DetectionFilter
 from streamer.wildlife.storage import save_detection_image
 from streamer.wildlife.sync import WildlifeSyncWorker
+from streamer.wildlife.types import Detection
 
 if TYPE_CHECKING:
     from streamer.cameras import CameraManager
@@ -99,12 +102,20 @@ class WildlifeManager:
                 cooldown_seconds=self._config.wildlife.cooldown_seconds,
                 allowed_classes=allowed,
             )
-            self._tasks.append(
-                asyncio.create_task(
-                    self._detect_loop(camera_num),
-                    name=f"wildlife-cam{camera_num}",
+            if cam_cfg.tile_inference:
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._tiled_detect_loop(camera_num),
+                        name=f"wildlife-cam{camera_num}-tiled",
+                    )
                 )
-            )
+            else:
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._detect_loop(camera_num),
+                        name=f"wildlife-cam{camera_num}",
+                    )
+                )
 
         if self._config.wildlife.sync.enabled:
             self._sync = WildlifeSyncWorker(
@@ -197,48 +208,136 @@ class WildlifeManager:
                 log.exception("Inference failed")
                 continue
 
-            for detection in detections:
-                if not filt.accept(camera_num, detection):
-                    continue
-                detected_at = datetime.fromtimestamp(
+            await self._persist_detections(
+                camera_num,
+                detections,
+                frame.rgb,
+                detected_at=datetime.fromtimestamp(
                     frame.captured_at, tz=timezone.utc
-                )
+                ),
+                log=log,
+            )
+
+    async def _tiled_detect_loop(self, camera_num: int) -> None:
+        """High-res main capture + overlapping tile inference (cam1)."""
+
+        cam = self._cameras.get(camera_num)
+        detector = self._detectors[camera_num]
+        cam_cfg = self._camera_wildlife_config(camera_num)
+        log = logger.getChild(f"detect.cam{camera_num}.tiled")
+        interval = cam_cfg.inference_interval_seconds
+        grid = tuple(cam_cfg.tile_grid)
+        tile_size = tuple(cam_cfg.tile_size)
+        overlap = cam_cfg.tile_overlap
+
+        log.info(
+            "Tiled inference enabled grid=%sx%s interval=%.1fs capture=%s",
+            grid[0],
+            grid[1],
+            interval,
+            cam_cfg.capture_size,
+        )
+
+        while True:
+            if not self._active():
+                await asyncio.sleep(1.0)
+                continue
+            cycle_started = asyncio.get_running_loop().time()
+            try:
+                await cam.acquire()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Acquire failed for tiled capture")
+                await asyncio.sleep(interval)
+                continue
+            try:
                 try:
-                    image_path = save_detection_image(
-                        self._images_dir,
-                        camera_num,
-                        detection,
-                        frame.rgb,
-                        store_annotated=self._config.wildlife.store_annotated,
-                        detected_at=detected_at,
+                    rgb = await cam.capture_main()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("High-res capture failed")
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    detections = await asyncio.to_thread(
+                        detector.detect_tiled,
+                        rgb,
+                        grid=grid,
+                        tile_size=tile_size,
+                        overlap=overlap,
                     )
                 except Exception:
-                    log.exception("Failed to save detection image")
+                    log.exception("Tiled inference failed")
+                    await asyncio.sleep(interval)
                     continue
 
-                conn = await self._db.connect()
-                try:
-                    row_id = await self._db.insert_detection(
-                        conn,
-                        detected_at=detected_at,
-                        camera=camera_num,
-                        species=detection.species,
-                        display_name=detection.display_name,
-                        confidence=detection.confidence,
-                        bbox=(
-                            detection.x_center,
-                            detection.y_center,
-                            detection.width,
-                            detection.height,
-                        ),
-                        image_path=image_path,
-                    )
-                finally:
-                    await conn.close()
-                log.info(
-                    "Saved detection id=%d camera=%d species=%s conf=%.2f",
-                    row_id,
+                await self._persist_detections(
                     camera_num,
-                    detection.species,
-                    detection.confidence,
+                    detections,
+                    rgb,
+                    detected_at=datetime.now(timezone.utc),
+                    log=log,
                 )
+            finally:
+                try:
+                    await cam.release()
+                except Exception:
+                    log.exception("Release after tiled capture failed")
+
+            elapsed = asyncio.get_running_loop().time() - cycle_started
+            await asyncio.sleep(max(0.0, interval - elapsed))
+
+    async def _persist_detections(
+        self,
+        camera_num: int,
+        detections: list[Detection],
+        rgb: np.ndarray,
+        *,
+        detected_at: datetime,
+        log: logging.Logger,
+    ) -> None:
+        filt = self._filters[camera_num]
+        for detection in detections:
+            if not filt.accept(camera_num, detection):
+                continue
+            try:
+                image_path = save_detection_image(
+                    self._images_dir,
+                    camera_num,
+                    detection,
+                    rgb,
+                    store_annotated=self._config.wildlife.store_annotated,
+                    detected_at=detected_at,
+                )
+            except Exception:
+                log.exception("Failed to save detection image")
+                continue
+
+            conn = await self._db.connect()
+            try:
+                row_id = await self._db.insert_detection(
+                    conn,
+                    detected_at=detected_at,
+                    camera=camera_num,
+                    species=detection.species,
+                    display_name=detection.display_name,
+                    confidence=detection.confidence,
+                    bbox=(
+                        detection.x_center,
+                        detection.y_center,
+                        detection.width,
+                        detection.height,
+                    ),
+                    image_path=image_path,
+                )
+            finally:
+                await conn.close()
+            log.info(
+                "Saved detection id=%d camera=%d species=%s conf=%.2f",
+                row_id,
+                camera_num,
+                detection.species,
+                detection.confidence,
+            )

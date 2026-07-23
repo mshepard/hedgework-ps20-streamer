@@ -55,6 +55,25 @@ class CameraWildlifeConfig(BaseModel):
     labels_path: str = ""
     # Empty = accept all classes from the model on this camera.
     classes: list[str] = Field(default_factory=list)
+    # When true, capture a high-res main stream and run overlapping
+    # tile inference (intended for small subjects like pollinators).
+    tile_inference: bool = False
+    # High-res still size for tiled inference, e.g. [2304, 1296].
+    # MJPEG continues at the camera's ``resolution`` via a lores stream.
+    capture_size: tuple[int, int] | None = None
+    tile_grid: tuple[int, int] = (3, 2)
+    tile_size: tuple[int, int] = (640, 640)
+    tile_overlap: float = Field(default=0.15, ge=0.0, lt=1.0)
+    inference_interval_seconds: float = Field(default=3.0, ge=0.5)
+
+    @field_validator("capture_size", "tile_grid", "tile_size", mode="before")
+    @classmethod
+    def _coerce_size_pair(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            return (int(v[0]), int(v[1]))
+        raise ValueError("expected [width, height]")
 
 
 class CameraConfig(BaseModel):

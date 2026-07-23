@@ -179,6 +179,13 @@ classes = []
 model_path = "/var/lib/streamer/models/pollinator.hef"
 labels_path = "/var/lib/streamer/models/pollinator.json"
 classes = []
+# High-res main + lores MJPEG; overlapping tiles for small insects.
+tile_inference = true
+capture_size = [2304, 1296]
+tile_grid = [3, 2]
+tile_size = [640, 640]
+tile_overlap = 0.15
+inference_interval_seconds = 3.0
 
 [wildlife.sync]
 enabled = false

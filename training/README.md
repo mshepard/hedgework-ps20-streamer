@@ -171,8 +171,17 @@ labels_path = "/var/lib/streamer/models/bird.json"
 [camera1.wildlife]
 model_path = "/var/lib/streamer/models/pollinator.hef"
 labels_path = "/var/lib/streamer/models/pollinator.json"
+# Small insects: high-res main stills + overlapping 640 tiles.
+# MJPEG stays at camera resolution via a lores stream.
+tile_inference = true
+capture_size = [2304, 1296]
+tile_grid = [3, 2]
+tile_size = [640, 640]
+tile_overlap = 0.15
+inference_interval_seconds = 3.0
 ```
 
+`tile_inference` is cam1-only in practice: bees are too small in a single 720p→640 downscale. Cam0 keeps full-frame bird inference from the stream.
 Restart: `sudo bash scripts/update.sh`
 
 ---

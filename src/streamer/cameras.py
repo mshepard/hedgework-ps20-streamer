@@ -251,12 +251,16 @@ class Camera:
         framerate: float,
         controls: dict[str, Any] | None = None,
         idle_grace_seconds: int = 10,
+        inference_resolution: tuple[int, int] | None = None,
     ) -> None:
         self.camera_num = camera_num
         self.resolution = resolution
         self.framerate = framerate
         self.controls = dict(controls or {})
         self.idle_grace_seconds = idle_grace_seconds
+        # When set, configure a high-res ``main`` stream for wildlife
+        # stills and a ``lores`` stream at ``resolution`` for MJPEG.
+        self.inference_resolution = inference_resolution
 
         self._picam2: Picamera2 | None = None
         self._refcount: int = 0
@@ -290,6 +294,16 @@ class Camera:
         # with (camera_num, consecutive_failures). Set via
         # ``CameraManager.attach_failure_callback``.
         self._failure_cb: Callable[[int, int], Awaitable[None]] | None = None
+
+    @property
+    def dual_stream(self) -> bool:
+        return self.inference_resolution is not None
+
+    @property
+    def stream_capture_name(self) -> str:
+        """Stream name used for MJPEG / publisher frames."""
+
+        return "lores" if self.dual_stream else "main"
 
     @property
     def running(self) -> bool:
@@ -436,28 +450,47 @@ class Camera:
         from picamera2 import Picamera2  # noqa: PLC0415  (deferred import)
 
         width, height = self.resolution
-        logger.info(
-            "Starting camera %d at %dx%d @ %.2f fps",
-            self.camera_num,
-            width,
-            height,
-            self.framerate,
-        )
-        picam2 = Picamera2(camera_num=self.camera_num)
         frame_duration_us = int(round(1_000_000 / self.framerate))
         # ``BGR888`` in picamera2 returns numpy in RGB channel order. Pick
         # this so Pillow's mode="RGB" consumes the array directly with no
         # explicit swap. ``buffer_count=2`` is the minimum that lets the
         # capture loop run smoothly without letting stale buffers
         # accumulate — higher values stalled under the dual-IMX708 setup.
-        config = picam2.create_video_configuration(
-            main={"size": (width, height), "format": "BGR888"},
-            controls={
-                "FrameDurationLimits": (frame_duration_us, frame_duration_us),
-                **self.controls,
-            },
-            buffer_count=2,
-        )
+        controls = {
+            "FrameDurationLimits": (frame_duration_us, frame_duration_us),
+            **self.controls,
+        }
+        picam2 = Picamera2(camera_num=self.camera_num)
+        if self.inference_resolution is not None:
+            inf_w, inf_h = self.inference_resolution
+            logger.info(
+                "Starting camera %d dual-stream: main=%dx%d lores=%dx%d @ %.2f fps",
+                self.camera_num,
+                inf_w,
+                inf_h,
+                width,
+                height,
+                self.framerate,
+            )
+            config = picam2.create_video_configuration(
+                main={"size": (inf_w, inf_h), "format": "BGR888"},
+                lores={"size": (width, height), "format": "BGR888"},
+                controls=controls,
+                buffer_count=2,
+            )
+        else:
+            logger.info(
+                "Starting camera %d at %dx%d @ %.2f fps",
+                self.camera_num,
+                width,
+                height,
+                self.framerate,
+            )
+            config = picam2.create_video_configuration(
+                main={"size": (width, height), "format": "BGR888"},
+                controls=controls,
+                buffer_count=2,
+            )
         picam2.configure(config)
         picam2.start()
         self._picam2 = picam2
@@ -518,16 +551,30 @@ class Camera:
         self._start_blocking()
 
     async def capture(self) -> np.ndarray:
-        """Capture one frame from the main stream as an RGB (H, W, 3) array."""
+        """Capture one MJPEG/publisher frame as an RGB (H, W, 3) array.
 
+        Uses the lores stream when dual-stream (tiled inference) is
+        enabled; otherwise the single main stream.
+        """
+
+        return await self._capture_stream(self.stream_capture_name)
+
+    async def capture_main(self) -> np.ndarray:
+        """Capture the high-res main stream (for tiled wildlife inference)."""
+
+        return await self._capture_stream("main")
+
+    async def _capture_stream(self, stream_name: str) -> np.ndarray:
         if self._picam2 is None:
             raise RuntimeError(f"Camera {self.camera_num} is not running")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._picam2_executor, self._capture_blocking
+            self._picam2_executor,
+            self._capture_blocking,
+            stream_name,
         )
 
-    def _capture_blocking(self) -> np.ndarray:
+    def _capture_blocking(self, stream_name: str = "main") -> np.ndarray:
         with self._device_lock:
             picam2 = self._picam2
             if picam2 is None:
@@ -536,7 +583,7 @@ class Camera:
             # libcamera versions / multi-camera setups, hand back a view
             # into a shared buffer pool. Copying decouples the two
             # cameras' frame streams.
-            frame = picam2.capture_array("main").copy()
+            frame = picam2.capture_array(stream_name).copy()
         # A delivered frame proves the pipeline is healthy again.
         self.consecutive_failures = 0
         return frame
@@ -640,12 +687,17 @@ class CameraManager:
 def _make_camera(
     num: int, cfg: CameraConfig, stream: StreamConfig, idle_grace_seconds: int
 ) -> Camera:
+    inference_resolution = None
+    wildlife = cfg.wildlife
+    if wildlife.tile_inference and wildlife.capture_size is not None:
+        inference_resolution = tuple(wildlife.capture_size)
     return Camera(
         camera_num=num,
         resolution=cfg.resolution,
         framerate=stream.framerate,
         controls=cfg.controls,
         idle_grace_seconds=idle_grace_seconds,
+        inference_resolution=inference_resolution,
     )
 
 

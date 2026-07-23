@@ -25,6 +25,32 @@ class WildlifeDetectorBackend(ABC):
     def detect(self, rgb: np.ndarray) -> list[Detection]:
         """Run inference on an RGB frame."""
 
+    def detect_tiled(
+        self,
+        rgb: np.ndarray,
+        *,
+        grid: tuple[int, int],
+        tile_size: tuple[int, int],
+        overlap: float,
+        iou_threshold: float = 0.5,
+    ) -> list[Detection]:
+        """Run overlapping tile inference and merge boxes to full-frame coords."""
+
+        from streamer.wildlife.tiling import (  # noqa: PLC0415
+            iter_tiles,
+            nms_merge,
+            remap_detection,
+        )
+
+        full_h, full_w = rgb.shape[0], rgb.shape[1]
+        remapped: list[Detection] = []
+        for tile in iter_tiles(rgb, grid, tile_size, overlap):
+            for det in self.detect(tile.rgb):
+                remapped.append(
+                    remap_detection(det, tile, full_w, full_h)
+                )
+        return nms_merge(remapped, iou_threshold=iou_threshold)
+
     @property
     @abstractmethod
     def backend_name(self) -> str:
